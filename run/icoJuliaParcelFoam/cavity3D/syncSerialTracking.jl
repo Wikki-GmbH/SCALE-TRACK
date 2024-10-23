@@ -313,9 +313,9 @@ end
 
         for t = 1LBL:nSteps
 
-            # Explicit Euler time integration with Stokes drag
+            # Implicit Euler time integration with Stokes drag
             dragFactor = 18SCL*μ*Δt/(ρ*⌀^2)
-            velNew .= vel .+ dragFactor.*(u .- vel)
+            velNew .= (vel .+ dragFactor.*u)./(1 + dragFactor)
             posNew .= pos .+ velNew.*Δt
 
             # Find the new position index and check whether the particle hits a
