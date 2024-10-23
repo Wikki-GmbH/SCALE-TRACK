@@ -355,6 +355,8 @@ end
                     posI = posNewI
                 end
             end
+            vel .= velNew
+            pos .= posNew
         end
 
         c.X[i] = posNew.x
