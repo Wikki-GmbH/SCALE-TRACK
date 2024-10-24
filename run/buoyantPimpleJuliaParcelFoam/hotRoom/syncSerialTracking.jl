@@ -482,7 +482,7 @@ const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
 # nParticles = 25_000_000  # RTX3090 fast
 # nParticles = 1_000_000  # RTX3090 faster
 # nParticles = 100_000  # GT710
-nParticles = 1000
+nParticles = 100
 
 # executor = GPU()
 executor = CPU()
@@ -493,7 +493,7 @@ nCellsPerDirection = 20
 origin = 0.0
 ending = 1.0
 
-@show nParticles μ ρ nCellsPerDirection origin ending
+#@show nParticles μ ρ nCellsPerDirection origin ending
 
 mesh = Mesh(nCellsPerDirection, origin, ending)
 chunk = allocate_chunk(nParticles, μ, ρ, executor)
@@ -506,12 +506,12 @@ write(chunk, executor)
 tNow = timing(tNow, "Written VTK data")
 
 # Create random velocity field when running in REPL
-if isinteractive()
-    reg["U"] = allocate_field(nCellsPerDirection^3, CPU())
-    tNow = timing(tNow, "Allocated velocity field")
-    init_random!(reg["U"])
-    tNow = timing(tNow, "Initialized velocity field")
-end
+#if isinteractive()
+#    reg["U"] = allocate_field(nCellsPerDirection^3, CPU())
+#    tNow = timing(tNow, "Allocated velocity field")
+#    init_random!(reg["U"])
+#    tNow = timing(tNow, "Initialized velocity field")
+#end
 
 totalTime = 0.0
 firstPass = true

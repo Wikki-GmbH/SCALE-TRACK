@@ -1,6 +1,6 @@
 //JULIA_DIR = /snap/julia/current
 //JULIA_DIR = /home/sles/install/julia-1.10.5-Int64
-JULIA_DIR = ~/.julia/juliaup/julia-1.11.0+0.x64.linux.gnu
+JULIA_DIR = /home/schmalfuss/julia/julia-1.11.0-rc2
 JULIA_COMPILE_FLAGS = $(shell $(JULIA_DIR)/share/julia/julia-config.jl --cflags)
 JULIA_LINK_FLAGS = $(shell $(JULIA_DIR)/share/julia/julia-config.jl --ldflags)
 JULIA_LIBS = $(shell $(JULIA_DIR)/share/julia/julia-config.jl --ldlibs)
