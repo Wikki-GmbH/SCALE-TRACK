@@ -277,14 +277,14 @@ end
 end
 
 @inline function update!(
-    eulerian::TwoWayEulerian, state0, velocity, posI, massByVolume, ::CPU
+    eulerian::TwoWayEulerian, state0, velocity, posI, mᵈByρᶜ, ::CPU
 )
-    @inbounds eulerian.UTrans[posI] = massByVolume*(state0 - velocity)
+    @inbounds eulerian.UTrans[posI] = mᵈByρᶜ*(state0 - velocity)
     return set_parcel_state(eulerian, velocity)
 end
 
 @inline function update!(
-    eulerian::TwoWayEulerian, state0, velocity, posI, massByVolume, ::GPU
+    eulerian::TwoWayEulerian, state0, velocity, posI, mᵈByρᶜ, ::GPU
 )
     @inbounds  begin
         for i=1LBL:3LBL
@@ -294,7 +294,7 @@ end
                 reinterpret(scalar, eulerian.UTrans), (posI-1LBL)*3LBL+i
             )
             CUDA.atomic_add!(
-                scalar_ptr, massByVolume*(state0[i] - velocity[i])
+                scalar_ptr, mᵈByρᶜ*(state0[i] - velocity[i])
             )
         end
     end
@@ -367,7 +367,7 @@ end
         ρᵈ = c.ρ
         ρᵈByρᶜ = c.ρᵈByρᶜ
         ⌀ = c.d[i]
-        massByVolume = ρᵈByρᶜ*4SCL/3SCL*π*⌀^3
+        mᵈByρᶜ = ρᵈByρᶜ*π*⌀^3/6SCL
         pos = MutScalarVec(c.X[i], c.Y[i], c.Z[i])
         vel = MutScalarVec(c.U[i], c.V[i], c.W[i])
         posNew = MutScalarVec(c.X[i], c.Y[i], c.Z[i])
@@ -418,7 +418,7 @@ end
                 if (bx || by || bz)
                     I, J, K, posNewI = locate(posNew, mesh)
                     state0 = update!(
-                        eulerian, state0, velNew, posI, massByVolume, executor
+                        eulerian, state0, velNew, posI, mᵈByρᶜ, executor
                     )
                 end
 
@@ -437,7 +437,7 @@ end
         c.U[i] = velNew.x
         c.V[i] = velNew.y
         c.W[i] = velNew.z
-        update!(eulerian, state0, velNew, posI, massByVolume, executor)
+        update!(eulerian, state0, velNew, posI, mᵈByρᶜ, executor)
     end
     return nothing
 end
