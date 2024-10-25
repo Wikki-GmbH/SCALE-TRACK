@@ -57,6 +57,23 @@ volVectorField U
 juliaWrapper julia;
 julia.reallocate(U);
 
+Info<< "Creating field momentum source UTrans\n" << endl;
+volVectorField UTrans
+(
+    IOobject
+    (
+        "UTrans",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::NO_WRITE
+    ),
+    mesh,
+    dimensionedVector(dimVelocity, Zero)
+);
+
+julia.reallocate(UTrans);
+
 #include "createPhi.H"
 
 

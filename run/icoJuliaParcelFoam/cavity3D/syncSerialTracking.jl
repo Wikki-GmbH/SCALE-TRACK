@@ -38,6 +38,7 @@ using StaticArrays
 using BenchmarkTools
 import Adapt
 import Base: *
+using Accessors
 
 ###############################################################################
 # Auxillary Methods
@@ -91,6 +92,21 @@ end
 const VectorField = Vector{ScalarVec}
 Adapt.@adapt_structure VectorField
 
+struct TwoWayEulerian{T}
+    N::label
+    U::T
+    UTrans::T
+end
+
+function TwoWayEulerian{T}(N) where {T}
+    TwoWayEulerian{T}(
+        N,
+        T(undef, N),
+        T(undef, N)
+    )
+end
+Adapt.@adapt_structure TwoWayEulerian
+
 # Mesh is limited to a cuboid defined by two points origin and ending with L
 # containing length in each direction and N number of cells per direction
 struct Mesh
@@ -127,10 +143,12 @@ struct Time
     Δt::scalar
 end
 
+# Subscripts: c - carrier phase; d - dispersed phase
 struct Chunk{T, A}
     N::label
-    μ::scalar
+    μᶜ::scalar
     ρ::scalar
+    ρᵈByρᶜ::scalar
     time::A
     d::T
     X::T
@@ -141,11 +159,12 @@ struct Chunk{T, A}
     W::T
 end
 
-function Chunk{T, A}(N, μ, ρ) where {T, A}
+function Chunk{T, A}(N, μᶜ, ρ, ρᵈByρᶜ) where {T, A}
     Chunk{T, A}(
         N,
-        μ,
+        μᶜ,
         ρ,
+        ρᵈByρᶜ,
         A(undef, 1),
         T(undef, N),
         T(undef, N),
@@ -166,12 +185,12 @@ struct GPU end
 
 ###############################################################################
 # Methods
-function allocate_chunk(size, μ, ρ, ::CPU)
-    return Chunk{Vector{scalar}, Vector{Time}}(size, μ, ρ)
+function allocate_chunk(::CPU, constructorArgs...)
+    return Chunk{Vector{scalar}, Vector{Time}}(constructorArgs...)
 end
 
-function allocate_chunk(size, μ, ρ, ::GPU)
-    return Chunk{CuVector{scalar}, CuVector{Time}}(size, μ, ρ)
+function allocate_chunk(::GPU, constructorArgs...)
+    return Chunk{CuVector{scalar}, CuVector{Time}}(constructorArgs...)
 end
 
 function allocate_field(size, ::CPU)
@@ -190,11 +209,11 @@ function set_time!(chunk, t, Δt, ::GPU)
     CUDA.@allowscalar chunk.time[1] = Time(t, Δt)
 end
 
-function increment_time!(chunk, Δt, ::CPU)
+function increment_time!(chunk, Δt, executor::CPU)
     set_time!(chunk, chunk.time[1].t + Δt, Δt, executor)
 end
 
-function increment_time!(chunk, Δt, ::GPU)
+function increment_time!(chunk, Δt, executor::GPU)
     CUDA.@allowscalar t = chunk.time[1].t
     set_time!(chunk, t + Δt, Δt, executor)
 end
@@ -219,11 +238,11 @@ function init!(chunk, mesh, executor)
     return nothing
 end
 
-function init_random!(field)
+function init_random!(field, interval, offset)
     rng = Random.default_rng()
     Random.seed!(rng, 19891)
     rand!(rng, field)
-    map!(x -> x*5e-3SCL .+ 5e-3SCL, field, field)
+    map!(x -> x*interval .+ offset, field, field)
     return nothing
 end
 
@@ -237,7 +256,8 @@ function copy!(a, b)
     return nothing
 end
 
-# Find cell index given position
+# Compute cell index given position and the corresponding indices along each
+# direction
 @inline function locate(x, y, z, mesh)
     # TODO unsafe_trunc instead of floor is 20% faster but then numbers within
     # -1 < n < 0 are truncated to 0 which leads to incorrect localization of
@@ -248,74 +268,120 @@ end
     return (i, j, k, (abs(k)*mesh.NyTimesNz + abs(j)*mesh.N.x + abs(i) + 1LBL))
 end
 
-@inline function locate(pos::MutScalarVec, mesh)
+@inline function locate(pos, mesh)
     return locate(pos.x, pos.y, pos.z, mesh)
 end
 
+@inline function set_parcel_state(::TwoWayEulerian, velocity)
+    return ScalarVec(velocity)
+end
+
+@inline function update!(
+    eulerian::TwoWayEulerian, state0, velocity, posI, massByVolume, ::CPU
+)
+    @inbounds eulerian.UTrans[posI] = massByVolume*(state0 - velocity)
+    return set_parcel_state(eulerian, velocity)
+end
+
+@inline function update!(
+    eulerian::TwoWayEulerian, state0, velocity, posI, massByVolume, ::GPU
+)
+    @inbounds  begin
+        for i=1LBL:3LBL
+            # Reinterpret the eulerian field at a location specified by posI
+            # with an offset as scalar and get pointer to it.
+            scalar_ptr = pointer(
+                reinterpret(scalar, eulerian.UTrans), (posI-1LBL)*3LBL+i
+            )
+            CUDA.atomic_add!(
+                scalar_ptr, massByVolume*(state0[i] - velocity[i])
+            )
+        end
+    end
+    return set_parcel_state(eulerian, velocity)
+end
+
+# Apply the change in velocity to the source due to bounce at boundary
+@inline function update_at_boundary!(
+    state0, ::TwoWayEulerian, velocity, componentI
+)
+    @inbounds @reset state0[componentI] -= 2SCL*velocity[componentI]
+    return state0
+end
+
 # Evolve particles using CPU
-function evolve!(chunk, Uc, mesh, Δt, ::CPU)
+function evolve!(chunk, eulerian, mesh, Δt, executor::CPU)
     @inbounds begin
         increment_time!(chunk, Δt, CPU())
         nSteps = 10LBL
         ΔtP = chunk.time[1].Δt / nSteps
         for i = 1LBL:chunk.N
-            evolve_particle!(chunk, Uc, i, ΔtP, mesh, nSteps)
+            evolve_particle!(chunk, eulerian, i, ΔtP, mesh, nSteps, executor)
         end
     end
     return nothing
 end
 
 # CUDA call with a setup that efficiently maps to the spesific GPU
-function evolve!(chunk, Uc, mesh, Δt, ::GPU)
-    if !haskey(reg, "deviceU")
-        reg["deviceU"] = CuVector{ScalarVec}(undef, length(Uc))
+function evolve!(chunk, eulerian, mesh, Δt, executor::GPU)
+    if !haskey(reg, "deviceEulerian")
+        reg["deviceEulerian"] = TwoWayEulerian{CuVector{ScalarVec}}(eulerian.N)
     end
-    copyto!(reg["deviceU"], Uc)
+    copy!(reg["deviceEulerian"], eulerian)
 
     increment_time!(chunk, Δt, GPU())
 
-    kernel = @cuda launch=false evolve_on_device!(chunk, reg["deviceU"], mesh)
+    kernel = @cuda launch=false evolve_on_device!(
+        chunk, reg["deviceEulerian"], mesh, executor
+    )
     config = launch_configuration(kernel.fun)
     threads = min(chunk.N, config.threads)
     blocks = cld(chunk.N, threads)
 
-    CUDA.@sync kernel(chunk, reg["deviceU"], mesh; threads, blocks)
+    CUDA.@sync kernel(chunk, reg["deviceEulerian"], mesh; threads, blocks)
+
+    copy!(eulerian, reg["deviceEulerian"])
     return nothing
 end
 
 # Evolve particles using GPU
-function evolve_on_device!(chunk, Uc, mesh)
+function evolve_on_device!(chunk, eulerian, mesh, executor)
     @inbounds begin
         nSteps = 10LBL
         Δtd = chunk.time[1].Δt / nSteps  # Time step for the dispersed phase
         nParticles = chunk.N
         i = (blockIdx().x - 1LBL) * blockDim().x + threadIdx().x
         if(i <= nParticles)
-            evolve_particle!(chunk, Uc, i, Δtd, mesh, nSteps)
+            evolve_particle!(chunk, eulerian, i, Δtd, mesh, nSteps, executor)
         end
     end
     return nothing
 end
 
-@inline function evolve_particle!(chunk, Uc, i, Δt, mesh, nSteps)
+@inline function evolve_particle!(
+    chunk, eulerian, i, Δt, mesh, nSteps, executor
+)
     @inbounds begin
         c = chunk
-        μ = c.μ
-        ρ = c.ρ
+        μᶜ = c.μᶜ
+        ρᵈ = c.ρ
+        ρᵈByρᶜ = c.ρᵈByρᶜ
         ⌀ = c.d[i]
+        massByVolume = ρᵈByρᶜ*4SCL/3SCL*π*⌀^3
         pos = MutScalarVec(c.X[i], c.Y[i], c.Z[i])
         vel = MutScalarVec(c.U[i], c.V[i], c.W[i])
         posNew = MutScalarVec(c.X[i], c.Y[i], c.Z[i])
         velNew = MutScalarVec(c.U[i], c.V[i], c.W[i])
 
         I, J, K, posI::label = locate(pos, mesh)
-        u = Uc[posI]
+        uᶜ = eulerian.U[posI]
+        state0 = set_parcel_state(eulerian, vel)
 
         for t = 1LBL:nSteps
 
             # Implicit Euler time integration with Stokes drag
-            dragFactor = 18SCL*μ*Δt/(ρ*⌀^2)
-            velNew .= (vel .+ dragFactor.*u)./(1 + dragFactor)
+            dragFactor = 18SCL*μᶜ*Δt/(ρᵈ*⌀^2)
+            velNew .= (vel .+ dragFactor.*uᶜ)./(1 + dragFactor)
             posNew .= pos .+ velNew.*Δt
 
             # Find the new position index and check whether the particle hits a
@@ -334,24 +400,30 @@ end
                 if bx
                     posNew.x = pos.x
                     velNew.x = -vel.x
+                    state0 = update_at_boundary!(state0, eulerian, vel, 1)
                 end
 
                 if by
                     posNew.y = pos.y
                     velNew.y = -vel.y
+                    state0 = update_at_boundary!(state0, eulerian, vel, 2)
                 end
 
                 if bz
                     posNew.z = pos.z
                     velNew.z = -vel.z
+                    state0 = update_at_boundary!(state0, eulerian, vel, 3)
                 end
 
                 if (bx || by || bz)
                     I, J, K, posNewI = locate(posNew, mesh)
+                    state0 = update!(
+                        eulerian, state0, velNew, posI, massByVolume, executor
+                    )
                 end
 
                 if (t !== nSteps && posNewI !== posI)
-                    u = Uc[posNewI]
+                    uᶜ = eulerian.U[posNewI]
                     posI = posNewI
                 end
             end
@@ -365,6 +437,7 @@ end
         c.U[i] = velNew.x
         c.V[i] = velNew.y
         c.W[i] = velNew.z
+        update!(eulerian, state0, velNew, posI, massByVolume, executor)
     end
     return nothing
 end
@@ -397,7 +470,7 @@ end
 function write(chunk, ::GPU)
     c = chunk
     if !(haskey(reg, "hostChunk"))
-        reg["hostChunk"] = Chunk{Vector{scalar}, Vector{Time}}(c.N, c.μ, c.ρ)
+        reg["hostChunk"] = allocate_chunk(CPU(), c.N, c.μᶜ, c.ρ, c.ρᵈByρᶜ)
     end
     copy!(reg["hostChunk"], c)
     write(reg["hostChunk"], CPU())
@@ -423,8 +496,6 @@ end
 ###############################################################################
 # Coupling to C++
 
-reg = Dict()
-
 function allocate_array_j(
         name::Cstring, size::Cint, nComponents::Cint, typeByteSize::Cint
     )::Ptr{Cdouble}
@@ -442,14 +513,27 @@ function allocate_array_j(
         )
     end
 
-    # nComponents needs to be Int
-    n = Int(nComponents)
-    if (n == 1)
-        reg[s] = Vector{scalar}(undef, size)
-    else
-        reg[s] = Vector{SVector{n, scalar}}(undef, size)
+    if Int(size) !== Int(nCells)
+        throw(
+            ErrorException(
+                string(
+                    "Size of Julia mesh: ", nCells,
+                    " is different from field's ", s, " size: ", Int(size)
+                )
+            )
+        )
     end
-    return Base.unsafe_convert(Ptr{Cdouble}, reg[s])
+
+    # By now, assume that the requested field already has been allocated
+    field = getfield(reg["eulerian"], Symbol(s))
+    # nComponents needs to be Int
+    # n = Int(nComponents)
+    # if (n == 1)
+    #     field = Vector{scalar}(undef, size)
+    # else
+    #     field = Vector{SVector{n, scalar}}(undef, size)
+    # end
+    return Base.unsafe_convert(Ptr{Cdouble}, field)
 end
 
 const allocate_array_ptr =
@@ -461,7 +545,9 @@ function evolve_cloud(Δt)
 
     tStart = time()
 
-    evolve!(chunk, reg["U"], mesh, Δt, executor)
+    fill!(reg["eulerian"].UTrans, ScalarVec(0SCL, 0SCL, 0SCL))
+
+    evolve!(chunk, reg["eulerian"], mesh, Δt, executor)
 
     tEvolve = time() - tStart
     if !firstPass
@@ -480,24 +566,29 @@ const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
 ###############################################################################
 # Global data init
 
-# nParticles = 800_000_000  # RTX3090
+nParticles = 800_000_000  # RTX3090
 # nParticles = 25_000_000  # RTX3090 fast
 # nParticles = 1_000_000  # RTX3090 faster
+# nParticles = 2  # GT710
 nParticles = 100_000  # GT710
 
 executor = GPU()
 # executor = CPU()
 
-μ = 1e-3
-ρ = 1.0
+μᶜ = 1e-3
+ρᶜ = 1e3
+ρᵈ = 1.0
 nCellsPerDirection = 20
+nCells = nCellsPerDirection^3
 origin = 0.0
 ending = 1.0
 
-@show nParticles μ ρ nCellsPerDirection origin ending
+@show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending
+
+reg = Dict()
 
 mesh = Mesh(nCellsPerDirection, origin, ending)
-chunk = allocate_chunk(nParticles, μ, ρ, executor)
+chunk = allocate_chunk(executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
 tNow = timing(tNow, "Allocated particle chunk")
 init!(chunk, mesh, executor)
 tNow = timing(tNow, "Initialized particle chunk")
@@ -506,11 +597,12 @@ tNow = timing(tNow, "Initialized particle chunk")
 write(chunk, executor)
 tNow = timing(tNow, "Written VTK data")
 
+# Allocate Eulerian fields
+reg["eulerian"] = TwoWayEulerian{VectorField}(nCells)
+
 # Create random velocity field when running in REPL
 if isinteractive()
-    reg["U"] = allocate_field(nCellsPerDirection^3, CPU())
-    tNow = timing(tNow, "Allocated velocity field")
-    init_random!(reg["U"])
+    init_random!(reg["eulerian"].U, 2SCL, -1SCL)
     tNow = timing(tNow, "Initialized velocity field")
 end
 
