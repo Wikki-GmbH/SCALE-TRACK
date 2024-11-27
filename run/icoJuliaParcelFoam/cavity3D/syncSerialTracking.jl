@@ -261,7 +261,7 @@ end
 @inline function locate(x, y, z, mesh)
     # TODO unsafe_trunc instead of floor is 20% faster but then numbers within
     # -1 < n < 0 are truncated to 0 which leads to incorrect localization of
-    # the particle
+    # the parcel
     i = floor(label, (x - mesh.origin.x)*mesh.rΔ.x)
     j = floor(label, (y - mesh.origin.y)*mesh.rΔ.y)
     k = floor(label, (z - mesh.origin.z)*mesh.rΔ.z)
@@ -322,7 +322,7 @@ function evolve!(chunk, eulerian, mesh, Δt, executor::CPU)
     return nothing
 end
 
-# CUDA call with a setup that efficiently maps to the spesific GPU
+# CUDA call with a setup that efficiently maps to the specific GPU
 function evolve!(chunk, eulerian, mesh, Δt, executor::GPU)
     if !haskey(reg, "deviceEulerian")
         reg["deviceEulerian"] = TwoWayEulerian{CuVector{ScalarVec}}(eulerian.N)
@@ -384,15 +384,17 @@ end
             velNew .= (vel .+ dragFactor.*uᶜ)./(1 + dragFactor)
             posNew .= pos .+ velNew.*Δt
 
-            # Find the new position index and check whether the particle hits a
+            # Find the new position index and check whether the parcel hits a
             # boundary.  If yes, then hold the corresponding position component
-            # and mirror the velocity component.  In this way, the particle
+            # and mirror the velocity component.  In this way, the parcel
             # will always stay within the domain.
 
             I, J, K, posNewI::label = locate(posNew, mesh)
 
-            bi = (posNewI !== posI)
-            if bi
+            # Has the parcel moved to another cell?
+            if (posNewI !== posI)
+
+                # Has the parcel hit a boundary?
                 bx = (I < 0LBL) || (I >= mesh.N.x)
                 by = (J < 0LBL) || (J >= mesh.N.y)
                 bz = (K < 0LBL) || (K >= mesh.N.z)
@@ -415,18 +417,21 @@ end
                     state0 = update_at_boundary!(state0, eulerian, vel, 3)
                 end
 
+                # Reevaluate the position index and the cell the parcel is in,
+                # since it may have changed after the boundary hit.
                 if (bx || by || bz)
                     I, J, K, posNewI = locate(posNew, mesh)
-                    state0 = update!(
-                        eulerian, state0, velNew, posI, mᵈByρᶜ, executor
-                    )
                 end
 
                 if (t !== nSteps && posNewI !== posI)
+                    state0 = update!(
+                        eulerian, state0, velNew, posI, mᵈByρᶜ, executor
+                    )
                     uᶜ = eulerian.U[posNewI]
                     posI = posNewI
                 end
             end
+
             vel .= velNew
             pos .= posNew
         end
