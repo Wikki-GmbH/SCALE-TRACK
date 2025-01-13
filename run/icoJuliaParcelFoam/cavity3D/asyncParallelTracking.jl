@@ -26,10 +26,6 @@
     with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
 =#
 
-println("Load asyncSerialTracking")
-
-tNow = time()
-
 using Random
 # using Distributions  # Hangs when profiling with Nsight
 using WriteVTK
@@ -39,6 +35,8 @@ using BenchmarkTools
 import Adapt
 import Base: *, Event
 using Accessors
+using MPI
+using Base.Threads
 
 ###############################################################################
 # Auxillary Methods
@@ -51,8 +49,6 @@ function timing(t, s)
     flush(stdout)
     return time()
 end
-
-tNow = timing(tNow, "Loaded modules")
 
 ###############################################################################
 # Type alias
@@ -116,24 +112,41 @@ struct Mesh
     L::ScalarVec
     Δ::ScalarVec
     rΔ::ScalarVec
-    NyTimesNz::scalar
+    decomposition::LabelVec
+    partitionN::LabelVec
+    partitionNxTimesNy::label
 end
 
-function Mesh(N::LabelVec, origin::ScalarVec, ending::ScalarVec)
+function construct_mesh(N, origin, ending, decomposition)
     L = ending .- origin
     Δ = L ./ N
     rΔ = 1.0SCL ./ Δ
-    Mesh(N, origin, ending, L, Δ, rΔ, N.y*N.z)
+    if (sum(rem.(N, decomposition)) != 0)
+        throw(
+            ErrorException(
+                string(
+                    "Each partition must have the same number of cells per",
+                    " direction.  The current setup does not comply:\n",
+                    " N = ", N, " decomposition = ", decomposition
+                )
+            )
+        )
+    end
+    partitionN = N ./ decomposition
+    partitionNxTimesNy = partitionN[1]*partitionN[2]
+    Mesh(
+        N, origin, ending, L, Δ, rΔ, decomposition, partitionN,
+        partitionNxTimesNy
+    )
 end
 
-function Mesh(NInt::Integer, originR::Real, endingR::Real)
-    N = LabelVec(NInt, NInt, NInt)
-    origin = ScalarVec(originR, originR, originR)
-    ending = ScalarVec(endingR, endingR, endingR)
-    L = ending .- origin
-    Δ = L ./ N
-    rΔ = 1.0SCL ./ Δ
-    Mesh(N, origin, ending, L, Δ, rΔ, N.y*N.z)
+function Mesh(
+    NInt::Integer, originR::Real, endingR::Real, decomposition=(1,1,1)
+)
+    N = [NInt, NInt, NInt]
+    origin = [originR, originR, originR]
+    ending = [endingR, endingR, endingR]
+    construct_mesh(N, origin, ending, decomposition)
 end
 
 Adapt.@adapt_structure Mesh
@@ -146,8 +159,16 @@ end
 # Locks and events that help to orchestrate the async tasks and threads
 struct Locks
     Eulerian::ReentrantLock
+    EulerianComm::Vector{ReentrantLock}
+    Chunk::ReentrantLock
+end
 
-    Locks() = new(ReentrantLock())
+function Locks(n)
+    eulerianComm = Vector{ReentrantLock}(undef, n)
+    @inbounds for i in eachindex(eulerianComm)
+        eulerianComm[i] = ReentrantLock()
+    end
+    Locks(ReentrantLock(), eulerianComm, ReentrantLock())
 end
 
 struct Events
@@ -198,6 +219,40 @@ end
 
 Adapt.@adapt_structure Chunk
 
+# Communication types based on MPI
+abstract type CommRole end
+struct Master <: CommRole end
+struct Slave <: CommRole end
+
+struct Comm{T<:CommRole}
+    role::T
+    communicator::MPI.Comm
+    isMaster::Bool
+    rank::Integer
+    jlRank::Integer
+    rankMaster::Integer
+    size::Integer
+end
+
+function Comm(role, communicator)
+    isMaster = (typeof(role) == Master)
+    if MPI.Initialized()
+        rank = MPI.Comm_rank(communicator)
+        return Comm(
+            role,
+            communicator,
+            isMaster,
+            rank,
+            rank + 1,
+            0,
+            MPI.Comm_size(communicator)
+        )
+    else
+        rank = 0
+        return Comm(role, communicator, isMaster, rank, rank + 1, 0, 1)
+    end
+end
+
 # Structs used for function tagging to identify on which backend the code is
 # executed
 struct CPU end
@@ -205,6 +260,27 @@ struct GPU end
 
 ###############################################################################
 # Methods
+function initComm()
+    if MPI.Initialized() && MPI.JULIA_TYPE_PTR_ATTR[]==0
+        MPI.run_init_hooks()
+    else
+        # Construct communication with a single rank, if MPI is not initialized
+        return Comm(Master(), MPI.COMM_WORLD)
+    end
+
+    rank = MPI.Comm_rank(MPI.COMM_WORLD)
+
+    if rank == 0
+        comm = Comm(Master(), MPI.COMM_WORLD)
+        MPI.versioninfo()
+    else
+        comm = Comm(Slave(), MPI.COMM_WORLD)
+        # Suppress output from the slave ranks
+        redirect_stdout(devnull)
+    end
+    return comm
+end
+
 function allocate_chunk(::CPU, constructorArgs...)
     return Chunk{Vector{scalar}, Vector{Time}}(constructorArgs...)
 end
@@ -213,13 +289,11 @@ function allocate_chunk(::GPU, constructorArgs...)
     return Chunk{CuVector{scalar}, CuVector{Time}}(constructorArgs...)
 end
 
-function allocate_field(size, ::CPU)
-    return VectorField(undef, size)
+function allocate_chunk(::Comm{Master}, executor, constructorArgs...)
+    return allocate_chunk(executor, constructorArgs...)
 end
 
-function allocate_field(size, ::GPU)
-    return CuVector{ScalarVec}(undef, size)
-end
+function allocate_chunk(::Comm{<:CommRole}, executor, constructorArgs...) end
 
 function set_time!(chunk, t, Δt, ::CPU)
     chunk.time[1] = Time(t, Δt)
@@ -228,6 +302,12 @@ end
 function set_time!(chunk, t, Δt, ::GPU)
     CUDA.@allowscalar chunk.time[1] = Time(t, Δt)
 end
+
+function increment_time!(chunk, Δt, ::Comm{Master}, executor)
+    increment_time!(chunk, Δt, executor)
+end
+
+function increment_time!(chunk, Δt, ::Comm{<:CommRole}, executor) end
 
 function increment_time!(chunk, Δt, executor::CPU)
     set_time!(chunk, chunk.time[1].t + Δt, Δt, executor)
@@ -258,6 +338,12 @@ function init!(chunk, mesh, executor)
     return nothing
 end
 
+function init!(chunk, mesh, ::Comm{Master}, executor)
+    init!(chunk, mesh, executor)
+end
+
+function init!(chunk, mesh, ::Comm{<:CommRole}, executor) end
+
 function init_random!(field, interval, offset)
     rng = Random.default_rng()
     Random.seed!(rng, 19891)
@@ -282,10 +368,22 @@ end
     # TODO unsafe_trunc instead of floor is 20% faster but then numbers within
     # -1 < n < 0 are truncated to 0 which leads to incorrect localization of
     # the parcel
-    i = floor(label, (x - mesh.origin.x)*mesh.rΔ.x)
-    j = floor(label, (y - mesh.origin.y)*mesh.rΔ.y)
-    k = floor(label, (z - mesh.origin.z)*mesh.rΔ.z)
-    return (i, j, k, (abs(k)*mesh.NyTimesNz + abs(j)*mesh.N.x + abs(i) + 1LBL))
+    iGlobal = floor(label, (x - mesh.origin.x)*mesh.rΔ.x)
+    jGlobal = floor(label, (y - mesh.origin.y)*mesh.rΔ.y)
+    kGlobal = floor(label, (z - mesh.origin.z)*mesh.rΔ.z)
+    iPartition, iLocal = divrem(iGlobal, mesh.partitionN.x)
+    jPartition, jLocal = divrem(jGlobal, mesh.partitionN.y)
+    kPartition, kLocal = divrem(kGlobal, mesh.partitionN.z)
+
+    partitionI = (
+        abs(kPartition)*mesh.decomposition.x*mesh.decomposition.y
+        + abs(jPartition)*mesh.decomposition.x + abs(iPartition) + 1LBL
+    )
+    posI = (
+        abs(kLocal)*mesh.partitionNxTimesNy
+        + abs(jLocal)*mesh.partitionN.x + abs(iLocal) + 1LBL
+    )
+    return (iGlobal, jGlobal, kGlobal, posI, partitionI)
 end
 
 @inline function locate(pos, mesh)
@@ -299,7 +397,7 @@ end
 @inline function update!(
     eulerian::TwoWayEulerian, state0, velocity, posI, mᵈByρᶜ, ::CPU
 )
-    @inbounds eulerian.UTrans[posI] = mᵈByρᶜ*(state0 - velocity)
+    @inbounds eulerian.UTrans[posI] += mᵈByρᶜ*(state0 - velocity)
     return set_parcel_state(eulerian, velocity)
 end
 
@@ -308,8 +406,10 @@ end
 )
     @inbounds  begin
         for i=1LBL:3LBL
-            # Reinterpret the eulerian field at a location specified by posI
-            # with an offset as scalar and get pointer to it.
+            # ScalarVec is immutable and thus its components cannot be mutated
+            # atomically the straightforward way.  Reinterpret the eulerian
+            # field at a location specified by posI with an offset as scalar
+            # and get pointer to it.  Use the pointer to mutate data.
             scalar_ptr = pointer(
                 reinterpret(scalar, eulerian.UTrans), (posI-1LBL)*3LBL+i
             )
@@ -355,20 +455,62 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
     return nothing
 end
 
-function init_evolve!(chunk, eulerian, mesh, control, executor::GPU)
+function init_evolve!(chunk, eulerian, mesh, control, comm, executor::GPU)
     errormonitor(
-        @async init_async_evolve!(chunk, eulerian, mesh, control, executor)
+        @spawn init_async_evolve!(
+            chunk, eulerian, mesh, control, comm, executor
+        )
     )
 end
 
+function init_async_evolve!(
+    chunk, eulerian, mesh, control, comm::Comm{<:Slave}, executor::GPU
+)
+    # The infinite loop to be run inside an asynchronous task that is
+    # specifically yielded at "lock" and "wait"
+    while true
+        lock(control.locks.Eulerian) do
+            sreq = MPI.Isend(
+                reg["eulerian"][comm.jlRank].U, comm.communicator,
+                dest=comm.rankMaster
+            )
+            wait(sreq)
+        end
+        notify(control.events.U_copied)
+        wait(control.events.Eulerian_computed)
+        notify(control.events.S_copied)
+    end
+    return nothing
+end
+
 # CUDA call with a setup that efficiently maps to the specific GPU
-function init_async_evolve!(chunk, eulerian, mesh, control, executor::GPU)
+function init_async_evolve!(
+    chunk, eulerian, mesh, control, comm::Comm{Master}, executor::GPU
+)
     if !haskey(reg, "deviceEulerian")
-        reg["deviceEulerian"] = TwoWayEulerian{CuVector{ScalarVec}}(eulerian.N)
+        # CUDA containers that own the Eulerian fields on the device
+        reg["deviceEulerian"] =
+            Vector{TwoWayEulerian{CuVector{ScalarVec}}}(undef, comm.size)
+        # CUDA container for the pointers (CuDeviceVector) to the Eulerian
+        # containers.  It needs to be stored separately since
+        # CuVector{CuVector} is not possible.
+        reg["deviceEulerianPointer"] =
+            CuVector{TwoWayEulerian{CuDeviceVector{ScalarVec, 1}}}(
+                undef, comm.size
+            )
+        for i in eachindex(reg["deviceEulerian"])
+            # Initialize Eulerian fields
+            reg["deviceEulerian"][i] =
+                TwoWayEulerian{CuVector{ScalarVec}}(eulerian[i].N)
+            # Get the pointers on the device (cudaconvert) and store them in
+            # the pointer container.
+            CUDA.@allowscalar reg["deviceEulerianPointer"][i] =
+                cudaconvert(reg["deviceEulerian"][i])
+        end
     end
 
     kernel = @cuda launch=false evolve_on_device!(
-        chunk, reg["deviceEulerian"], mesh, executor
+        chunk, reg["deviceEulerianPointer"], mesh, executor
     )
     config = launch_configuration(kernel.fun)
     threads = min(chunk.N, config.threads)
@@ -377,25 +519,56 @@ function init_async_evolve!(chunk, eulerian, mesh, control, executor::GPU)
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
-        fill!(reg["deviceEulerian"].UTrans, ScalarVec(0SCL, 0SCL, 0SCL))
-        lock(control.locks.Eulerian) do
-            copyto!(reg["deviceEulerian"].U, eulerian.U)
+        # Reset sources on the device to zero
+        for de in reg["deviceEulerian"]
+            fill!(de.UTrans, ScalarVec(0SCL, 0SCL, 0SCL))  #!!
         end
+
+        for i in 2:comm.size
+            lock(control.locks.EulerianComm[i]) do
+                rreq = MPI.Irecv!(
+                    eulerian[i].U, comm.communicator, source=i-1
+                )
+                # Cooperative implementation (with yield) of MPI.Wait
+                wait(rreq)
+            end
+        end
+
+        lock(control.locks.Eulerian) do
+            for i in eachindex(eulerian)
+                lock(control.locks.EulerianComm[i]) do
+                    copyto!(reg["deviceEulerian"][i].U, eulerian[i].U)  #!!
+                end
+            end
+        end
+
         notify(control.events.U_copied)
 
         println("Evolve particles"); flush(stdout)
-        CUDA.@sync kernel(
-            chunk, reg["deviceEulerian"], mesh, executor; threads, blocks
-        )
+        for l in control.locks.EulerianComm
+            lock(l)
+        end
+        lock(control.locks.Chunk) do
+            CUDA.@sync kernel(
+                chunk, reg["deviceEulerianPointer"], mesh, executor;
+                threads, blocks
+            )
+        end
+        for l in control.locks.EulerianComm
+            unlock(l)
+        end
         tEvolve = time() - tStart
         global totalTime += tEvolve
-        println("Lagrangian solver: waiting time for evolve to finish = ",
-            round(tEvolve, sigdigits=4), " s; total waiting time = ",
-            round(totalTime, sigdigits=4), " s"
+        println("Lagrangian solver: waiting time for evolve to finish = \
+            $(round(tEvolve, sigdigits=4)) s; total waiting time = \
+            $(round(totalTime, sigdigits=4)) s"
         )
         wait(control.events.Eulerian_computed)
         lock(control.locks.Eulerian) do
-            copyto!(eulerian.UTrans, reg["deviceEulerian"].UTrans)
+            copyto!(
+                eulerian[comm.jlRank].UTrans,
+                reg["deviceEulerian"][comm.jlRank].UTrans
+            )
         end
         notify(control.events.S_copied)
     end
@@ -412,6 +585,7 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::GPU)
     global firstPass = false
     wait(control.events.U_copied)
     lock(control.locks.Eulerian)
+    return nothing
 end
 
 # Evolve particles using GPU
@@ -429,7 +603,7 @@ function evolve_on_device!(chunk, eulerian, mesh, executor)
 end
 
 @inline function evolve_particle!(
-    chunk, eulerian, i, Δt, mesh, nSteps, executor
+    chunk, eulerianArr, i, Δt, mesh, nSteps, executor
 )
     @inbounds begin
         c = chunk
@@ -443,7 +617,8 @@ end
         posNew = MutScalarVec(c.X[i], c.Y[i], c.Z[i])
         velNew = MutScalarVec(c.U[i], c.V[i], c.W[i])
 
-        I, J, K, posI::label = locate(pos, mesh)
+        I, J, K, posI::label, partitionI::label = locate(pos, mesh)
+        eulerian = eulerianArr[partitionI]
         uᶜ = eulerian.U[posI]
         state0 = set_parcel_state(eulerian, vel)
 
@@ -459,10 +634,10 @@ end
             # and mirror the velocity component.  In this way, the parcel
             # will always stay within the domain.
 
-            I, J, K, posNewI::label = locate(posNew, mesh)
+            I, J, K, posNewI::label, partitionNewI::label = locate(posNew, mesh)
 
-            # Has the parcel moved to another cell?
-            if (posNewI !== posI)
+            # Has the parcel moved to another cell or partition?
+            if (posNewI != posI) || (partitionNewI != partitionI)
 
                 # Has the parcel hit a boundary?
                 bx = (I < 0LBL) || (I >= mesh.N.x)
@@ -487,13 +662,18 @@ end
                     state0 = update_at_boundary!(state0, eulerian, vel, 3)
                 end
 
-                # Reevaluate the position index and the cell the parcel is in,
+                # Reevaluate the cell and partition index the parcel is in,
                 # since it may have changed after the boundary hit.
                 if (bx || by || bz)
-                    I, J, K, posNewI = locate(posNew, mesh)
+                    I, J, K, posNewI, partitionNewI = locate(posNew, mesh)
                 end
 
-                if (t !== nSteps && posNewI !== posI)
+                if (partitionNewI != partitionI)
+                    # Reset pointer to eulerian
+                    eulerian = eulerianArr[partitionI]
+                end
+
+                if (t != nSteps && posNewI != posI)
                     state0 = update!(
                         eulerian, state0, velNew, posI, mᵈByρᶜ, executor
                     )
@@ -547,12 +727,20 @@ function write(chunk, ::GPU)
     if !(haskey(reg, "hostChunk"))
         reg["hostChunk"] = allocate_chunk(CPU(), c.N, c.μᶜ, c.ρ, c.ρᵈByρᶜ)
     end
-    copy!(reg["hostChunk"], c)
+    lock(control.locks.Chunk) do
+        copy!(reg["hostChunk"], c)
+    end
     write(reg["hostChunk"], CPU())
     return nothing
 end
 
-function write_paraview_collection()
+function write(chunk, ::Comm{Master}, executor)
+    write(chunk, executor)
+end
+
+function write(chunk, ::Comm{<:CommRole}, executor) end
+
+function write_paraview_collection(::Comm{Master})
     if haskey(reg, "paraview")
         if haskey(reg["paraview"], "pvd")
             vtkCollection = reg["paraview"]["pvd"]
@@ -567,6 +755,8 @@ function write_paraview_collection()
     return nothing
 end
 
+function write_paraview_collection(::Comm{<:CommRole}) end
+
 
 ###############################################################################
 # Coupling to C++
@@ -577,7 +767,7 @@ function allocate_array_j(
     GC.@preserve name
     s = unsafe_string(pointer(name))
 
-    if Int(typeByteSize) !== Int(sizeof(scalar))
+    if Int(typeByteSize) != Int(sizeof(scalar))
         throw(
             ErrorException(
                 string(
@@ -588,11 +778,11 @@ function allocate_array_j(
         )
     end
 
-    if Int(size) !== Int(nCells)
+    if Int(size) != Int(prod(mesh.partitionN))
         throw(
             ErrorException(
                 string(
-                    "Size of Julia mesh: ", nCells,
+                    "Size of Julia mesh: ", prod(mesh.partitionN),
                     " is different from field's ", s, " size: ", Int(size)
                 )
             )
@@ -600,7 +790,7 @@ function allocate_array_j(
     end
 
     # By now, assume that the requested field already has been allocated
-    field = getfield(reg["eulerian"], Symbol(s))
+    field = getfield(reg["eulerian"][comm.jlRank], Symbol(s))
     # nComponents needs to be Int
     # n = Int(nComponents)
     # if (n == 1)
@@ -615,7 +805,8 @@ const allocate_array_ptr =
     @cfunction(allocate_array_j, Ptr{Cdouble}, (Cstring, Cint, Cint, Cint))
 
 function evolve_cloud(Δt)
-    increment_time!(chunk, Δt, executor)
+    println("Evolve cloud")
+    increment_time!(chunk, Δt, comm, executor)
     global tStart = time()
     evolve!(chunk, reg["eulerian"], mesh, Δt, control, executor)
     return nothing
@@ -625,6 +816,10 @@ const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
 
 ###############################################################################
 # Global data init
+comm = initComm()
+
+println("Load asyncSerialTracking")
+println("Julia active project: ", Base.active_project())
 
 nParticles = 800_000_000  # RTX3090
 # nParticles = 25_000_000  # RTX3090 fast
@@ -643,45 +838,60 @@ nCells = nCellsPerDirection^3
 origin = 0.0
 ending = 1.0
 
-@show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending
+if comm.size == 1
+    # Serial run
+    decomposition = (1, 1, 1)
+else
+    # Decomposition coefficients need to be the same as in the decomposeParDict
+    decomposition = (2, 2, 1)
+end
+
+@show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending decomposition
 
 reg = Dict()
 
-mesh = Mesh(nCellsPerDirection, origin, ending)
-chunk = allocate_chunk(executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
+mesh = Mesh(nCellsPerDirection, origin, ending, decomposition)
+tNow = time()
+chunk = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
 tNow = timing(tNow, "Allocated particle chunk")
-init!(chunk, mesh, executor)
+init!(chunk, mesh, comm, executor)
 tNow = timing(tNow, "Initialized particle chunk")
 
 # Write initial state
-# write(chunk, executor)
+# write(chunk, comm, executor)
 tNow = timing(tNow, "Written VTK data")
 
 # Allocate Eulerian fields
-reg["eulerian"] = TwoWayEulerian{VectorField}(nCells)
+reg["eulerian"] = Vector{TwoWayEulerian{VectorField}}(undef, comm.size)
+@inbounds for i in eachindex(reg["eulerian"])
+    reg["eulerian"][i] = TwoWayEulerian{VectorField}(prod(mesh.partitionN))
+end
 
 # Create random velocity field when running in REPL
 if isinteractive()
-    init_random!(reg["eulerian"].U, 2SCL, -1SCL)
+    for eulerian in reg["eulerian"]
+        init_random!(eulerian.U, 2SCL, -1SCL)
+    end
     tNow = timing(tNow, "Initialized velocity field")
 end
 
 totalTime = 0.0
 firstPass = true
 
-control = Control(Locks(), Events())
+control = Control(Locks(comm.size), Events())
 lock(control.locks.Eulerian)
 tStart = time()
-init_evolve!(chunk, reg["eulerian"], mesh, control, executor)
+init_evolve!(chunk, reg["eulerian"], mesh, control, comm, executor)
 tNow = timing(tNow, "Initialized asynchronous evolve")
 
-println("Load syncSerialTracking done\n")
+println("Load asyncSerialTracking done\n")
 flush(stdout)
 flush(stderr)
 
 # Test one time step when running in REPL
 if isinteractive()
     evolve_cloud(1e-3)
+    wait()
 end
 
 ###############################################################################

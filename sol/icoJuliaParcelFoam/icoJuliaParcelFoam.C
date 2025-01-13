@@ -65,11 +65,31 @@ int main(int argc, char *argv[])
 {
     // Initialise MPI with MPI_THREAD_MULTIPLE as required by MPI.jl
     // Ignore the warning later on
-    // UPstream::init(argc, argv, true);
+    // Initialise only if arguments contain "-parallel"
+    for (int argi = 1; argi < argc; ++argi)
+    {
+        const char *optName = argv[argi];
 
-    Info << "Initialising Julia" << endl;
+        if (optName[0] == '-')
+        {
+            ++optName;  // Looks like an option, skip leading '-'
+
+            if (strcmp(optName, "parallel") == 0)
+            {
+                UPstream::init(argc, argv, true);
+            }
+        }
+    }
+
+    Info<< "Initialising Julia" << endl;
+    int jl_argc = 2;
+    char** jl_argv = static_cast<char**>(malloc(sizeof(char*)*jl_argc));
+    jl_argv[0] = argv[0];
+    string threadsOpt = "--threads=2";
+    jl_argv[1] = const_cast<char*>(threadsOpt.c_str());
+    jl_parse_opts(&jl_argc, &jl_argv);
     jl_init();
-    Info << "Initialising Julia - done" << endl;
+    Info<< "Initialising Julia - done" << endl;
 
     argList::addNote
     (
@@ -88,6 +108,8 @@ int main(int argc, char *argv[])
 
     #include "createFields.H"
     #include "initContinuityErrs.H"
+
+    label writeTimes = 0;
 
     // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -167,13 +189,17 @@ int main(int argc, char *argv[])
 
         if (runTime.writeTime())
         {
-            julia.checkedEvalString("write(chunk, executor)");
+            julia.checkedEvalString("write(chunk, comm, executor)");
+            ++writeTimes;
         }
 
         runTime.printExecutionTime(Info);
     }
 
-    julia.checkedEvalString("write_paraview_collection()");
+    if (writeTimes)
+    {
+        julia.checkedEvalString("write_paraview_collection(comm)");
+    }
 
     Info<< "End\n" << endl;
 
