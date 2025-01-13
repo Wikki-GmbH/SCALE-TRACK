@@ -1,9 +1,7 @@
-//JULIA_DIR = /snap/julia/current
-//JULIA_DIR = /home/sles/install/julia-1.10.5-Int64
-JULIA_DIR = ~/.julia/juliaup/julia-1.11.0+0.x64.linux.gnu
-JULIA_COMPILE_FLAGS = $(shell $(JULIA_DIR)/share/julia/julia-config.jl --cflags)
-JULIA_LINK_FLAGS = $(shell $(JULIA_DIR)/share/julia/julia-config.jl --ldflags)
-JULIA_LIBS = $(shell $(JULIA_DIR)/share/julia/julia-config.jl --ldlibs)
+JULIA_SHARE = $(shell julia -e 'print(joinpath(Sys.BINDIR, Base.DATAROOTDIR, "julia"))')
+JULIA_COMPILE_FLAGS = $(shell $(JULIA_SHARE)/julia-config.jl --cflags)
+JULIA_LINK_FLAGS = $(shell $(JULIA_SHARE)/julia-config.jl --ldflags)
+JULIA_LIBS = $(shell $(JULIA_SHARE)/julia-config.jl --ldlibs)
 
 EXE_INC = \
     -I$(LIB_SRC)/finiteVolume/lnInclude \
