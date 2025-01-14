@@ -735,12 +735,15 @@ function write(chunk, ::GPU)
 end
 
 function write(chunk, ::Comm{Master}, executor)
+    GC.enable(false)
     write(chunk, executor)
+    GC.enable(true)
 end
 
 function write(chunk, ::Comm{<:CommRole}, executor) end
 
 function write_paraview_collection(::Comm{Master})
+    GC.enable(false)
     if haskey(reg, "paraview")
         if haskey(reg["paraview"], "pvd")
             vtkCollection = reg["paraview"]["pvd"]
@@ -752,6 +755,7 @@ function write_paraview_collection(::Comm{Master})
     end
     println("No paraview collection written since no paraview instance found"
             *" in the registry")
+    GC.enable(true)
     return nothing
 end
 
@@ -805,10 +809,19 @@ const allocate_array_ptr =
     @cfunction(allocate_array_j, Ptr{Cdouble}, (Cstring, Cint, Cint, Cint))
 
 function evolve_cloud(Δt)
+    # Workaround for the segmentation fault error when using multiple Julia
+    # threads.  The error occurs when the garbage collector (GC) is triggered
+    # in more than one thread at the same time.  Thus, disable GC in the
+    # affected functions.
+    GC.enable(false)
+
     println("Evolve cloud")
     increment_time!(chunk, Δt, comm, executor)
     global tStart = time()
     evolve!(chunk, reg["eulerian"], mesh, Δt, control, executor)
+
+    # Enable GC
+    GC.enable(true)
     return nothing
 end
 
