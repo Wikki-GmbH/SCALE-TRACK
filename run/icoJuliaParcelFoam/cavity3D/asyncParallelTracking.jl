@@ -158,7 +158,6 @@ end
 
 # Locks and events that help to orchestrate the async tasks and threads
 struct Locks
-    Eulerian::ReentrantLock
     EulerianComm::Vector{ReentrantLock}
     Chunk::ReentrantLock
 end
@@ -168,7 +167,7 @@ function Locks(n)
     @inbounds for i in eachindex(eulerianComm)
         eulerianComm[i] = ReentrantLock()
     end
-    Locks(ReentrantLock(), eulerianComm, ReentrantLock())
+    Locks(eulerianComm, ReentrantLock())
 end
 
 struct Events
@@ -230,7 +229,7 @@ struct Comm{T<:CommRole}
     isMaster::Bool
     rank::Integer
     jlRank::Integer
-    rankMaster::Integer
+    masterRank::Integer
     size::Integer
 end
 
@@ -469,15 +468,22 @@ function init_async_evolve!(
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
-        lock(control.locks.Eulerian) do
+        lock(control.locks.EulerianComm[comm.jlRank]) do
             sreq = MPI.Isend(
-                reg["eulerian"][comm.jlRank].U, comm.communicator,
-                dest=comm.rankMaster
+                eulerian[comm.jlRank].U, comm.communicator,
+                dest=comm.masterRank, tag=0
             )
             wait(sreq)
         end
         notify(control.events.U_copied)
         wait(control.events.Eulerian_computed)
+        lock(control.locks.EulerianComm[comm.jlRank]) do
+            rreq = MPI.Irecv!(
+                eulerian[comm.jlRank].UTrans, comm.communicator,
+                source=comm.masterRank, tag=1
+            )
+            wait(rreq)
+        end
         notify(control.events.S_copied)
     end
     return nothing
@@ -519,26 +525,27 @@ function init_async_evolve!(
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
+        rreq = Vector{MPI.AbstractRequest}(undef, comm.size)
+        for i in 2:comm.size
+            lock(control.locks.EulerianComm[i])
+            rreq[i] = MPI.Irecv!(
+                eulerian[i].U, comm.communicator, source=i-1, tag=0
+            )
+        end
+
         # Reset sources on the device to zero
         for de in reg["deviceEulerian"]
             fill!(de.UTrans, ScalarVec(0SCL, 0SCL, 0SCL))  #!!
         end
 
         for i in 2:comm.size
-            lock(control.locks.EulerianComm[i]) do
-                rreq = MPI.Irecv!(
-                    eulerian[i].U, comm.communicator, source=i-1
-                )
-                # Cooperative implementation (with yield) of MPI.Wait
-                wait(rreq)
-            end
+            wait(rreq[i])
+            unlock(control.locks.EulerianComm[i])
         end
 
-        lock(control.locks.Eulerian) do
-            for i in eachindex(eulerian)
-                lock(control.locks.EulerianComm[i]) do
-                    copyto!(reg["deviceEulerian"][i].U, eulerian[i].U)  #!!
-                end
+        for i in eachindex(eulerian)
+            lock(control.locks.EulerianComm[i]) do
+                copyto!(reg["deviceEulerian"][i].U, eulerian[i].U)
             end
         end
 
@@ -564,27 +571,41 @@ function init_async_evolve!(
             $(round(totalTime, sigdigits=4)) s"
         )
         wait(control.events.Eulerian_computed)
-        lock(control.locks.Eulerian) do
-            copyto!(
-                eulerian[comm.jlRank].UTrans,
-                reg["deviceEulerian"][comm.jlRank].UTrans
+
+        # Copy sources to CPU and send them to slaves
+        for i in eachindex(eulerian)
+            lock(control.locks.EulerianComm[i]) do
+                copyto!(eulerian[i].UTrans, reg["deviceEulerian"][i].UTrans)
+            end
+        end
+
+        notify(control.events.S_copied)
+
+        sreq = Vector{MPI.AbstractRequest}(undef, comm.size)
+        for i in 2:comm.size
+            lock(control.locks.EulerianComm[i])
+            sreq[i] = MPI.Isend(
+                eulerian[i].UTrans, comm.communicator, dest=i-1, tag=1
             )
         end
-        notify(control.events.S_copied)
+        for i in 2:comm.size
+            wait(sreq[i])
+            unlock(control.locks.EulerianComm[i])
+        end
     end
     return nothing
 end
 
 # Drives evolve on GPU
 function evolve!(chunk, eulerian, mesh, Δt, control, executor::GPU)
-    unlock(control.locks.Eulerian)
+    unlock(control.locks.EulerianComm[comm.jlRank])
     if !firstPass
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
     end
     global firstPass = false
     wait(control.events.U_copied)
-    lock(control.locks.Eulerian)
+    lock(control.locks.EulerianComm[comm.jlRank])
     return nothing
 end
 
@@ -831,7 +852,7 @@ const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
 # Global data init
 comm = initComm()
 
-println("Load asyncSerialTracking")
+println("Load asyncParallelTracking")
 println("Julia active project: ", Base.active_project())
 
 nParticles = 800_000_000  # RTX3090
@@ -876,8 +897,14 @@ tNow = timing(tNow, "Written VTK data")
 
 # Allocate Eulerian fields
 reg["eulerian"] = Vector{TwoWayEulerian{VectorField}}(undef, comm.size)
-@inbounds for i in eachindex(reg["eulerian"])
-    reg["eulerian"][i] = TwoWayEulerian{VectorField}(prod(mesh.partitionN))
+if comm.isMaster
+    @inbounds for i in eachindex(reg["eulerian"])
+        reg["eulerian"][i] = TwoWayEulerian{VectorField}(prod(mesh.partitionN))
+    end
+else
+    reg["eulerian"][comm.jlRank] = TwoWayEulerian{VectorField}(
+        prod(mesh.partitionN)
+    )
 end
 
 # Create random velocity field when running in REPL
@@ -892,12 +919,12 @@ totalTime = 0.0
 firstPass = true
 
 control = Control(Locks(comm.size), Events())
-lock(control.locks.Eulerian)
+lock(control.locks.EulerianComm[comm.jlRank])
 tStart = time()
 init_evolve!(chunk, reg["eulerian"], mesh, control, comm, executor)
 tNow = timing(tNow, "Initialized asynchronous evolve")
 
-println("Load asyncSerialTracking done\n")
+println("Load asyncParallelTracking done\n")
 flush(stdout)
 flush(stderr)
 
