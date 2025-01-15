@@ -178,9 +178,22 @@ struct Events
     Events() = new(Event(true), Event(true), Event(true))
 end
 
-struct Control
+# Extrapolation of sources
+abstract type AbstractExtrapolator end
+struct ConstExtrapolator <: AbstractExtrapolator
+    prevUTrans::VectorField
+end
+
+function ConstExtrapolator(N::Real)
+    vf = VectorField(undef, N)
+    fill!(vf, ScalarVec(0, 0, 0))
+    ConstExtrapolator(vf)
+end
+
+struct Control{E <: AbstractExtrapolator}
     locks::Locks
     events::Events
+    extrapolator::E
 end
 
 # Subscripts: c - carrier phase; d - dispersed phase
@@ -428,6 +441,17 @@ end
     return state0
 end
 
+# Constant extrapolator assumes that the current source is the same as the true
+# from the previous time step.  The estimated source from the previous time
+# step is corrected using the true source from the previous time step.
+# estSⁿ = trueSⁿ⁻¹ - estSⁿ⁻¹ + extrapSⁿ, with extrapSⁿ = trueSⁿ⁻¹
+function estimate_source!(currUTrans, extrapolator::ConstExtrapolator)
+    currUTrans .= 2.0.*currUTrans .- extrapolator.prevUTrans
+    for i in eachindex(control.extrapolator.prevUTrans)
+        @inbounds extrapolator.prevUTrans[i] = currUTrans[i]
+    end
+end
+
 # Nothing to init on CPU
 function init_evolve!(chunk, eulerian, mesh, control, executor::CPU)
 end
@@ -463,7 +487,7 @@ function init_evolve!(chunk, eulerian, mesh, control, comm, executor::GPU)
 end
 
 function init_async_evolve!(
-    chunk, eulerian, mesh, control, comm::Comm{<:Slave}, executor::GPU
+    chunk, eulerian, mesh, control, comm::Comm{Slave}, executor::GPU
 )
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
@@ -483,6 +507,7 @@ function init_async_evolve!(
                 source=comm.masterRank, tag=1
             )
             wait(rreq)
+            estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
         end
         notify(control.events.S_copied)
     end
@@ -572,18 +597,22 @@ function init_async_evolve!(
         )
         wait(control.events.Eulerian_computed)
 
-        # Copy sources to CPU and send them to slaves
-        for i in eachindex(eulerian)
-            lock(control.locks.EulerianComm[i]) do
-                copyto!(eulerian[i].UTrans, reg["deviceEulerian"][i].UTrans)
-            end
+        # Correct and estimate the source
+        lock(control.locks.EulerianComm[comm.jlRank]) do
+            copyto!(
+                eulerian[comm.jlRank].UTrans,
+                reg["deviceEulerian"][comm.jlRank].UTrans
+            )
+            estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
         end
 
         notify(control.events.S_copied)
 
+        # Copy sources to CPU and send them to slaves
         sreq = Vector{MPI.AbstractRequest}(undef, comm.size)
         for i in 2:comm.size
             lock(control.locks.EulerianComm[i])
+            copyto!(eulerian[i].UTrans, reg["deviceEulerian"][i].UTrans)
             sreq[i] = MPI.Isend(
                 eulerian[i].UTrans, comm.communicator, dest=i-1, tag=1
             )
@@ -867,6 +896,9 @@ executor = GPU()
 μᶜ = 1e-3
 ρᶜ = 1e3
 ρᵈ = 1.0
+# These properties lead to large velocity source terms
+# μᶜ = 1e3
+# ρᵈ = 1e8
 nCellsPerDirection = 20
 nCells = nCellsPerDirection^3
 origin = 0.0
@@ -918,7 +950,9 @@ end
 totalTime = 0.0
 firstPass = true
 
-control = Control(Locks(comm.size), Events())
+control = Control(
+    Locks(comm.size), Events(), ConstExtrapolator(prod(mesh.partitionN))
+)
 lock(control.locks.EulerianComm[comm.jlRank])
 tStart = time()
 init_evolve!(chunk, reg["eulerian"], mesh, control, comm, executor)
