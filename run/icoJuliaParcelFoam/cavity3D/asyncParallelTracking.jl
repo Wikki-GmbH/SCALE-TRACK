@@ -318,8 +318,6 @@ function allocate_chunk(::Comm{Master}, executor, constructorArgs...)
     return allocate_chunk(executor, constructorArgs...)
 end
 
-function allocate_chunk(::Comm{<:CommRole}, executor, constructorArgs...) end
-
 function set_time!(chunk, t, Δt, ::CPU)
     chunk.time[1] = Time(t, Δt)
 end
@@ -331,8 +329,6 @@ end
 function increment_time!(chunk, Δt, ::Comm{Master}, executor)
     increment_time!(chunk, Δt, executor)
 end
-
-function increment_time!(chunk, Δt, ::Comm{<:CommRole}, executor) end
 
 function increment_time!(chunk, Δt, executor::CPU)
     set_time!(chunk, chunk.time[1].t + Δt, Δt, executor)
@@ -519,10 +515,6 @@ end
     return nothing
 end
 
-# Nothing to init on CPU
-function init_evolve!(chunk, eulerian, mesh, control, executor::CPU)
-end
-
 # Evolve particles using CPU
 function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
     @inbounds begin
@@ -545,16 +537,8 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
     return nothing
 end
 
-function init_evolve!(chunks, eulerian, mesh, control, comm, executor::GPU)
-    errormonitor(
-        @spawn init_async_evolve!(
-            chunks, eulerian, mesh, control, comm, executor
-        )
-    )
-end
-
 function init_async_evolve!(
-    chunks, eulerian, mesh, control, comm::Comm{Slave}, executor::GPU
+    eulerian, control, comm::Comm{Slave}, ::GPU
 )
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
@@ -697,7 +681,7 @@ function init_async_evolve!(
 end
 
 # Drives evolve on GPU
-function evolve!(chunk, eulerian, mesh, Δt, control, executor::GPU)
+function evolve!(control, ::GPU)
     unlock(control.locks.EulerianComm[comm.jlRank])
     if !firstPass
         notify(control.events.Eulerian_computed)
@@ -941,12 +925,15 @@ function evolve_cloud(Δt)
     # affected functions.
     GC.enable(false)
 
-    println("Evolve cloud")
-    for chunk in chunks
-        increment_time!(chunk, Δt, comm, executor)
+    if comm.isMaster
+        println("Evolve cloud")
+        for chunk in chunks
+            increment_time!(chunk, Δt, comm, executor)
+        end
     end
+
     global tStart = time()
-    evolve!(chunks, reg["eulerian"], mesh, Δt, control, executor)
+    evolve!(control, executor)
 
     # Enable GC
     GC.enable(true)
@@ -998,33 +985,12 @@ end
 reg = Dict()
 
 mesh = Mesh(nCellsPerDirection, origin, ending, decomposition)
-tNow = time()
-chunks = Vector{Chunk}(undef, nChunks)
-if comm.isMaster
-    for i in eachindex(chunks)
-        chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
-        init!(chunks[i], mesh, executor, i)
-    end
-else
-    chunks = []  # Placeholder for slave ranks
-end
-tNow = timing(tNow, "Initialized particle chunk")
-
-# Write initial state
-# write(chunk, comm, executor)
-tNow = timing(tNow, "Written VTK data")
+control = Control(
+    Locks(comm.size), Events(), ConstExtrapolator(prod(mesh.partitionN))
+)
 
 # Allocate Eulerian fields
 reg["eulerian"] = Vector{TwoWayEulerian{VectorField}}(undef, comm.size)
-if comm.isMaster
-    @inbounds for i in eachindex(reg["eulerian"])
-        reg["eulerian"][i] = TwoWayEulerian{VectorField}(prod(mesh.partitionN))
-    end
-else
-    reg["eulerian"][comm.jlRank] = TwoWayEulerian{VectorField}(
-        prod(mesh.partitionN)
-    )
-end
 
 # Create random velocity field when running in REPL
 if isinteractive()
@@ -1034,16 +1000,48 @@ if isinteractive()
     tNow = timing(tNow, "Initialized velocity field")
 end
 
+tNow = time()
+tStart = time()
 totalTime = 0.0
 firstPass = true
 
-control = Control(
-    Locks(comm.size), Events(), ConstExtrapolator(prod(mesh.partitionN))
-)
+# Lock own Eulerian to put async evolve on wait until it's notified by call to
+# evolve_cloud from OF
 lock(control.locks.EulerianComm[comm.jlRank])
-tStart = time()
-init_evolve!(chunks, reg["eulerian"], mesh, control, comm, executor)
-tNow = timing(tNow, "Initialized asynchronous evolve")
+
+if comm.isMaster
+    chunks = Vector{Chunk}(undef, nChunks)
+    for i in eachindex(chunks)
+        chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
+        init!(chunks[i], mesh, executor, i)
+    end
+    tNow = timing(tNow, "Initialized particle chunk")
+
+    # Write initial state
+    # write(chunk, comm, executor)
+    tNow = timing(tNow, "Written VTK data")
+
+    # Allocate Eulerian for all ranks on master
+    for i in eachindex(reg["eulerian"])
+        reg["eulerian"][i] = TwoWayEulerian{VectorField}(prod(mesh.partitionN))
+    end
+
+    errormonitor(
+        @spawn init_async_evolve!(
+            chunks, reg["eulerian"], mesh, control, comm, executor
+        )
+    )
+    tNow = timing(tNow, "Initialized asynchronous evolve")
+else
+    # Allocate Eulerian only for self on slaves
+    reg["eulerian"][comm.jlRank] = TwoWayEulerian{VectorField}(
+        prod(mesh.partitionN)
+    )
+
+    errormonitor(
+        @spawn init_async_evolve!(reg["eulerian"], control, comm, executor)
+    )
+end
 
 println("Load asyncParallelTracking done\n")
 flush(stdout)
