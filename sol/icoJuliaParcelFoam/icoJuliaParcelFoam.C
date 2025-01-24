@@ -189,7 +189,7 @@ int main(int argc, char *argv[])
 
         if (runTime.writeTime())
         {
-            julia.checkedEvalString("write(chunk, comm, executor)");
+            julia.checkedEvalString("write(chunks, comm, executor)");
             ++writeTimes;
         }
 

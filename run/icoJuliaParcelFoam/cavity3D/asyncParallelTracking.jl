@@ -196,12 +196,24 @@ struct Control{E <: AbstractExtrapolator}
     extrapolator::E
 end
 
+struct BoundingBox{T}
+    min::T
+    max::T
+end
+
+function BoundingBox{T}() where {T}
+    BoundingBox{T}(T(undef, 3), T(undef, 3))
+end
+
+Adapt.@adapt_structure BoundingBox
+
 # Subscripts: c - carrier phase; d - dispersed phase
 struct Chunk{T, A}
     N::label
     μᶜ::scalar
     ρ::scalar
     ρᵈByρᶜ::scalar
+    boundingBox::BoundingBox{T}
     time::A
     d::T
     X::T
@@ -218,6 +230,7 @@ function Chunk{T, A}(N, μᶜ, ρ, ρᵈByρᶜ) where {T, A}
         μᶜ,
         ρ,
         ρᵈByρᶜ,
+        BoundingBox{T}(),
         A(undef, 1),
         T(undef, N),
         T(undef, N),
@@ -330,12 +343,14 @@ function increment_time!(chunk, Δt, executor::GPU)
     set_time!(chunk, t + Δt, Δt, executor)
 end
 
-function init!(chunk, mesh, executor)
+function init!(chunk, mesh, executor, randSeed=19891)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 
     rng = Random.default_rng()
-    Random.seed!(rng, 19891)
+    Random.seed!(rng, randSeed)
+    fill!(c.boundingBox.min, 0.0)
+    fill!(c.boundingBox.max, 0.0)
     rand!(rng, c.d)
     rand!(rng, c.X)
     rand!(rng, c.Y)
@@ -349,12 +364,6 @@ function init!(chunk, mesh, executor)
     fill!(c.W, 0.0)
     return nothing
 end
-
-function init!(chunk, mesh, ::Comm{Master}, executor)
-    init!(chunk, mesh, executor)
-end
-
-function init!(chunk, mesh, ::Comm{<:CommRole}, executor) end
 
 function init_random!(field, interval, offset)
     rng = Random.default_rng()
@@ -452,6 +461,64 @@ function estimate_source!(currUTrans, extrapolator::ConstExtrapolator)
     end
 end
 
+# Find an extremum by comparing the element i of array arr with the value val
+# using operation op
+@inline function atomic_extremum!(arr, i, val, op)
+    ptr = pointer(arr, i)
+    old = arr[i]
+    while true
+        assumed = old
+        old = CUDA.atomic_cas!(ptr, assumed, op(arr[i], val))
+        (assumed != old) || break  # mimic do-while loop
+    end
+    return nothing
+end
+
+# Calculation of the axis aligned bounding box mainly consists of identifying
+# global minima and maxima of particles' positions.  This is done in two
+# stages.  First, each GPU block finds the extrema of particles contained
+# within the block by using atomics and shared memory.  Second, the bounding
+# box is of the chunk is computed using atomics and global memory.
+@inline function update!(boundingBox, pos, iParticle, ::GPU)
+    @inbounds begin
+        # Allocate and initialize shared memory for min/max per block
+        s = CUDA.CuStaticSharedArray(scalar, 6)
+        sMin = view(s, 1:3)
+        sMax = view(s, 4:6)
+        if threadIdx().x == 1
+            for i in eachindex(sMin)
+                sMin[i] = scalar(Inf)
+                sMax[i] = scalar(-Inf)
+            end
+        end
+        sync_threads()
+
+        # Calculate min/max per block using atomics on shared memory
+        for i in eachindex(sMin)
+            atomic_extremum!(sMin, i, pos[i], Base.min)
+            atomic_extremum!(sMax, i, pos[i], Base.max)
+        end
+
+        # Reset bounding box in global memory using single thread
+        if iParticle == 1
+            for i in eachindex(boundingBox.min)
+                boundingBox.min[i] = scalar(Inf)
+                boundingBox.max[i] = scalar(-Inf)
+            end
+        end
+        sync_threads()
+
+        # Calculate global min/max using atomics on global memory
+        if threadIdx().x == 1
+            for i in eachindex(boundingBox.min)
+                atomic_extremum!(boundingBox.min, i, sMin[i], Base.min)
+                atomic_extremum!(boundingBox.max, i, sMax[i], Base.max)
+            end
+        end
+    end
+    return nothing
+end
+
 # Nothing to init on CPU
 function init_evolve!(chunk, eulerian, mesh, control, executor::CPU)
 end
@@ -478,16 +545,16 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
     return nothing
 end
 
-function init_evolve!(chunk, eulerian, mesh, control, comm, executor::GPU)
+function init_evolve!(chunks, eulerian, mesh, control, comm, executor::GPU)
     errormonitor(
         @spawn init_async_evolve!(
-            chunk, eulerian, mesh, control, comm, executor
+            chunks, eulerian, mesh, control, comm, executor
         )
     )
 end
 
 function init_async_evolve!(
-    chunk, eulerian, mesh, control, comm::Comm{Slave}, executor::GPU
+    chunks, eulerian, mesh, control, comm::Comm{Slave}, executor::GPU
 )
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
@@ -516,7 +583,7 @@ end
 
 # CUDA call with a setup that efficiently maps to the specific GPU
 function init_async_evolve!(
-    chunk, eulerian, mesh, control, comm::Comm{Master}, executor::GPU
+    chunks, eulerian, mesh, control, comm::Comm{Master}, executor::GPU
 )
     if !haskey(reg, "deviceEulerian")
         # CUDA containers that own the Eulerian fields on the device
@@ -540,12 +607,13 @@ function init_async_evolve!(
         end
     end
 
+    aChunk = first(chunks)
     kernel = @cuda launch=false evolve_on_device!(
-        chunk, reg["deviceEulerianPointer"], mesh, executor
+        aChunk, reg["deviceEulerianPointer"], mesh, executor
     )
     config = launch_configuration(kernel.fun)
-    threads = min(chunk.N, config.threads)
-    blocks = cld(chunk.N, threads)
+    threads = min(aChunk.N, config.threads)
+    blocks = cld(aChunk.N, threads)
 
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
@@ -581,10 +649,13 @@ function init_async_evolve!(
             lock(l)
         end
         lock(control.locks.Chunk) do
-            CUDA.@sync kernel(
-                chunk, reg["deviceEulerianPointer"], mesh, executor;
-                threads, blocks
-            )
+            for chunk in chunks
+                kernel(
+                    chunk, reg["deviceEulerianPointer"], mesh, executor;
+                    threads, blocks
+                )
+            end
+            CUDA.synchronize()
         end
         for l in control.locks.EulerianComm
             unlock(l)
@@ -743,6 +814,7 @@ end
         c.V[i] = velNew.y
         c.W[i] = velNew.z
         update!(eulerian, state0, velNew, posI, mᵈByρᶜ, executor)
+        update!(chunk.boundingBox, posNew, i, executor)
     end
     return nothing
 end
@@ -784,7 +856,7 @@ function write(chunk, ::GPU)
     return nothing
 end
 
-function write(chunk, ::Comm{Master}, executor)
+function write(chunks, ::Comm{Master}, executor)
     GC.enable(false)
     write(chunk, executor)
     GC.enable(true)
@@ -818,6 +890,8 @@ function write_paraview_collection(::Comm{<:CommRole}) end
 function allocate_array_j(
         name::Cstring, size::Cint, nComponents::Cint, typeByteSize::Cint
     )::Ptr{Cdouble}
+    GC.enable(false)
+
     GC.@preserve name
     s = unsafe_string(pointer(name))
 
@@ -852,6 +926,8 @@ function allocate_array_j(
     # else
     #     field = Vector{SVector{n, scalar}}(undef, size)
     # end
+
+    GC.enable(true)
     return Base.unsafe_convert(Ptr{Cdouble}, field)
 end
 
@@ -866,9 +942,11 @@ function evolve_cloud(Δt)
     GC.enable(false)
 
     println("Evolve cloud")
-    increment_time!(chunk, Δt, comm, executor)
+    for chunk in chunks
+        increment_time!(chunk, Δt, comm, executor)
+    end
     global tStart = time()
-    evolve!(chunk, reg["eulerian"], mesh, Δt, control, executor)
+    evolve!(chunks, reg["eulerian"], mesh, Δt, control, executor)
 
     # Enable GC
     GC.enable(true)
@@ -890,6 +968,9 @@ nParticles = 800_000_000  # RTX3090
 # nParticles = 2  # GT710
 nParticles = 100_000  # GT710
 
+nChunks = 10
+# nChunks = 1
+
 executor = GPU()
 # executor = CPU()
 
@@ -899,7 +980,7 @@ executor = GPU()
 # These properties lead to large velocity source terms
 # μᶜ = 1e3
 # ρᵈ = 1e8
-nCellsPerDirection = 20
+nCellsPerDirection = 40
 nCells = nCellsPerDirection^3
 origin = 0.0
 ending = 1.0
@@ -918,9 +999,15 @@ reg = Dict()
 
 mesh = Mesh(nCellsPerDirection, origin, ending, decomposition)
 tNow = time()
-chunk = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
-tNow = timing(tNow, "Allocated particle chunk")
-init!(chunk, mesh, comm, executor)
+chunks = Vector{Chunk}(undef, nChunks)
+if comm.isMaster
+    for i in eachindex(chunks)
+        chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
+        init!(chunks[i], mesh, executor, i)
+    end
+else
+    chunks = []  # Placeholder for slave ranks
+end
 tNow = timing(tNow, "Initialized particle chunk")
 
 # Write initial state
@@ -955,17 +1042,17 @@ control = Control(
 )
 lock(control.locks.EulerianComm[comm.jlRank])
 tStart = time()
-init_evolve!(chunk, reg["eulerian"], mesh, control, comm, executor)
+init_evolve!(chunks, reg["eulerian"], mesh, control, comm, executor)
 tNow = timing(tNow, "Initialized asynchronous evolve")
 
 println("Load asyncParallelTracking done\n")
 flush(stdout)
 flush(stderr)
 
-# Test one time step when running in REPL
+# Test few time steps when running in REPL
 if isinteractive()
     evolve_cloud(1e-3)
-    wait()
+    evolve_cloud(1e-3)
 end
 
 ###############################################################################
