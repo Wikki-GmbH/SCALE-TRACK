@@ -189,7 +189,10 @@ int main(int argc, char *argv[])
 
         if (runTime.writeTime())
         {
-            julia.checkedEvalString("write(chunks, comm, executor)");
+            julia.checkedEvalString
+            (
+                "if comm.isMaster write(chunks, comm, executor) end"
+            );
             ++writeTimes;
         }
 

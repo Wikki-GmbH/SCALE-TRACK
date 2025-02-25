@@ -39,7 +39,14 @@ using MPI
 using Base.Threads
 
 ###############################################################################
-# Auxillary Methods
+# Compile-time globals
+
+# Debug communication logging.  If true, Log to stdout from every rank prefixed
+# by [rank].
+DebugComm = true
+
+###############################################################################
+# Auxiliary Methods
 
 function timing(t, s)
     dt = round(time() - t, sigdigits=4)
@@ -48,6 +55,32 @@ function timing(t, s)
     # Invoke flush to ensure immediate printing even when executed within C code
     flush(stdout)
     return time()
+end
+
+# Macro for printing debug statements.  Enable by setting global DebugComm to
+# true.  If disabled, all debug printing is turned off with zero overhead.
+macro debugCommPrintln(ex)
+    if DebugComm
+        # Put message into a single string before printing to avoid output
+        # overlap
+        msg = :(Main.Base.inferencebarrier(Main.Base.string)(
+            "[", comm.rank, "] ", $(esc(ex)), "\n"
+        ))
+        return :( print($msg) )
+    end
+    return nothing
+end
+
+# Wrapper for MPI non-blocking synchronous send
+function Issend(buf::MPI.Buffer, dest::Integer, tag::Integer, comm::MPI.Comm,
+        req::MPI.AbstractRequest=MPI.Request()
+)
+    @assert MPI.isnull(req)
+    # int MPI_Issend(const void* buf, int count, MPI_Datatype datatype, int
+    #               dest, int tag, MPI_Comm comm, MPI_Request *request)
+    MPI.API.MPI_Issend(buf.data, buf.count, buf.datatype, dest, tag, comm, req)
+    MPI.setbuffer!(req, buf)
+    return req
 end
 
 ###############################################################################
@@ -113,6 +146,7 @@ struct Mesh
     Δ::ScalarVec
     rΔ::ScalarVec
     decomposition::LabelVec
+    decompositionXTimesY::label
     partitionN::LabelVec
     partitionNxTimesNy::label
 end
@@ -132,11 +166,12 @@ function construct_mesh(N, origin, ending, decomposition)
             )
         )
     end
+    decompositionXTimesY = decomposition[1]*decomposition[2]
     partitionN = N ./ decomposition
     partitionNxTimesNy = partitionN[1]*partitionN[2]
     Mesh(
-        N, origin, ending, L, Δ, rΔ, decomposition, partitionN,
-        partitionNxTimesNy
+        N, origin, ending, L, Δ, rΔ, decomposition, decompositionXTimesY,
+        partitionN, partitionNxTimesNy
     )
 end
 
@@ -158,16 +193,14 @@ end
 
 # Locks and events that help to orchestrate the async tasks and threads
 struct Locks
-    EulerianComm::Vector{ReentrantLock}
-    Chunk::ReentrantLock
+    chunkTransfers::ReentrantLock
+    eulerianComms::Vector{ReentrantLock}
+    eulerianRequest::ReentrantLock
 end
 
-function Locks(n)
-    eulerianComm = Vector{ReentrantLock}(undef, n)
-    @inbounds for i in eachindex(eulerianComm)
-        eulerianComm[i] = ReentrantLock()
-    end
-    Locks(eulerianComm, ReentrantLock())
+function Locks(nEulerian)
+    eulerianComms = fill(ReentrantLock(), nEulerian)
+    Locks(ReentrantLock(), eulerianComms, ReentrantLock())
 end
 
 struct Events
@@ -207,7 +240,7 @@ end
 
 Adapt.@adapt_structure BoundingBox
 
-# Subscripts: c - carrier phase; d - dispersed phase
+# Superscripts: c - carrier phase; d - dispersed phase
 struct Chunk{T, A}
     N::label
     μᶜ::scalar
@@ -245,12 +278,22 @@ end
 Adapt.@adapt_structure Chunk
 
 # Communication types based on MPI
-abstract type CommRole end
-struct Master <: CommRole end
-struct Slave <: CommRole end
+abstract type CommMember end
 
-struct Comm{T<:CommRole}
-    role::T
+struct Master <: CommMember
+    requiredEulerianRanks::Set{label}
+end
+
+Master() = Master(Set{label}())
+
+struct Slave <: CommMember
+    inquiringEulerianRanks::Vector{label}
+end
+
+Slave() = Slave(Vector{label}())
+
+struct Comm{T<:CommMember}
+    member::T
     communicator::MPI.Comm
     isMaster::Bool
     rank::Integer
@@ -259,12 +302,12 @@ struct Comm{T<:CommRole}
     size::Integer
 end
 
-function Comm(role, communicator)
-    isMaster = (typeof(role) == Master)
+function Comm(member, communicator)
+    isMaster = (typeof(member) == Master)
     if MPI.Initialized()
         rank = MPI.Comm_rank(communicator)
         return Comm(
-            role,
+            member,
             communicator,
             isMaster,
             rank,
@@ -274,7 +317,7 @@ function Comm(role, communicator)
         )
     else
         rank = 0
-        return Comm(role, communicator, isMaster, rank, rank + 1, 0, 1)
+        return Comm(member, communicator, isMaster, rank, rank + 1, 0, 1)
     end
 end
 
@@ -290,6 +333,7 @@ function initComm()
         MPI.run_init_hooks()
     else
         # Construct communication with a single rank, if MPI is not initialized
+        MPI.Init()
         return Comm(Master(), MPI.COMM_WORLD)
     end
 
@@ -300,8 +344,10 @@ function initComm()
         MPI.versioninfo()
     else
         comm = Comm(Slave(), MPI.COMM_WORLD)
-        # Suppress output from the slave ranks
-        redirect_stdout(devnull)
+        if !DebugComm
+            # Suppress output from the slave ranks
+            redirect_stdout(devnull)
+        end
     end
     return comm
 end
@@ -355,6 +401,10 @@ function init!(chunk, mesh, executor, randSeed=19891)
     @. c.X = c.X*mesh.L.x + mesh.origin.x
     @. c.Y = c.Y*mesh.L.y + mesh.origin.y
     @. c.Z = c.Z*mesh.L.z + mesh.origin.z
+    # Clustered init in a part of the domain
+    # @. c.X = c.X*mesh.Δ.x*mesh.partitionN.x*0.5*randSeed + mesh.origin.x + 0.6*mesh.L.x
+    # @. c.Y = c.Y*mesh.Δ.y*mesh.partitionN.y*0.5*randSeed + mesh.origin.y + 0.6*mesh.L.y
+    # @. c.Z = c.Z*mesh.Δ.z*mesh.partitionN.z*0.5*randSeed + mesh.origin.z + 0.6*mesh.L.z
     fill!(c.U, 0.0)
     fill!(c.V, 0.0)
     fill!(c.W, 0.0)
@@ -373,15 +423,18 @@ end
 function copy!(a, b)
     for n in fieldnames(typeof(a))
         if !(typeof(getfield(b, n)) <: Number)
-            copyto!(getfield(a, n), getfield(b, n))
+            if (typeof(getfield(b, n)) <: AbstractArray)
+                copyto!(getfield(a, n), getfield(b, n))
+            else
+                copy!(getfield(a, n), getfield(b, n))
+            end
         end
     end
     return nothing
 end
 
-# Compute cell index given position and the corresponding indices along each
-# direction
-@inline function locate(x, y, z, mesh)
+# Compute cell and partition indices along each direction.  Indices start at 0.
+@inline function locate_ijk(x, y, z, mesh)
     # TODO unsafe_trunc instead of floor is 20% faster but then numbers within
     # -1 < n < 0 are truncated to 0 which leads to incorrect localization of
     # the parcel
@@ -391,9 +444,18 @@ end
     iPartition, iLocal = divrem(iGlobal, mesh.partitionN.x)
     jPartition, jLocal = divrem(jGlobal, mesh.partitionN.y)
     kPartition, kLocal = divrem(kGlobal, mesh.partitionN.z)
+    return (iGlobal, jGlobal, kGlobal, iLocal, jLocal, kLocal, iPartition,
+        jPartition, kPartition
+    )
+end
 
+# Compute linear cell index, the corresponding indices along each direction and
+# linear partition index.  Linear indices start at 1 and direction indices at 0.
+@inline function locate(x, y, z, mesh)
+    iGlobal, jGlobal, kGlobal, iLocal, jLocal, kLocal, iPartition, jPartition,
+        kPartition = locate_ijk(x, y, z, mesh)
     partitionI = (
-        abs(kPartition)*mesh.decomposition.x*mesh.decomposition.y
+        abs(kPartition)*mesh.decompositionXTimesY
         + abs(jPartition)*mesh.decomposition.x + abs(iPartition) + 1LBL
     )
     posI = (
@@ -474,8 +536,8 @@ end
 # global minima and maxima of particles' positions.  This is done in two
 # stages.  First, each GPU block finds the extrema of particles contained
 # within the block by using atomics and shared memory.  Second, the bounding
-# box is of the chunk is computed using atomics and global memory.
-@inline function update!(boundingBox, pos, iParticle, ::GPU)
+# box of the chunk is computed using atomics and global memory.
+@inline function update!(boundingBox, pos, ::GPU)
     @inbounds begin
         # Allocate and initialize shared memory for min/max per block
         s = CUDA.CuStaticSharedArray(scalar, 6)
@@ -494,14 +556,6 @@ end
             atomic_extremum!(sMin, i, pos[i], Base.min)
             atomic_extremum!(sMax, i, pos[i], Base.max)
         end
-
-        # Reset bounding box in global memory using single thread
-        if iParticle == 1
-            for i in eachindex(boundingBox.min)
-                boundingBox.min[i] = scalar(Inf)
-                boundingBox.max[i] = scalar(-Inf)
-            end
-        end
         sync_threads()
 
         # Calculate global min/max using atomics on global memory
@@ -513,6 +567,26 @@ end
         end
     end
     return nothing
+end
+
+# Identify partition linear indices (i.e. ranks) belonging to the bounding box
+function determine!(requiredEulerianRanks, chunkBoundingBox, mesh, control)
+    _, _, _, _, _, _, minP... = locate_ijk(chunkBoundingBox.min..., mesh)
+    _, _, _, _, _, _, maxP... = locate_ijk(chunkBoundingBox.max..., mesh)
+    # Promote to one-based indexing scheme
+    minP = minP .+ 1
+    maxP = maxP .+ 1
+    d = mesh.decomposition
+    li = LinearIndices((1:d.x, 1:d.y, 1:d.z))
+    lock(control.locks.eulerianRequest) do
+        union!(
+            requiredEulerianRanks,
+            Set{label}(
+                li[minP[1]:maxP[1], minP[2]:maxP[2], minP[3]:maxP[3]]
+                .- 1  # Rank indexing is zero-based
+            )
+        )
+    end
 end
 
 # Evolve particles using CPU
@@ -537,29 +611,61 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
     return nothing
 end
 
-function init_async_evolve!(
-    eulerian, control, comm::Comm{Slave}, ::GPU
-)
+function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
-        lock(control.locks.EulerianComm[comm.jlRank]) do
-            sreq = MPI.Isend(
-                eulerian[comm.jlRank].U, comm.communicator,
-                dest=comm.masterRank, tag=0
-            )
-            wait(sreq)
+        # Non-blocking consensus for processing Eulerian requests
+        done = false
+        # Nothing to send, hence, set the barrier directly
+        breq = MPI.Ibarrier(comm.communicator)
+        inqRanks = comm.member.inquiringEulerianRanks
+        while !done
+            isMsg = MPI.Iprobe(comm.communicator, tag=2)
+            if isMsg
+                _, status = MPI.Recv!(
+                    Ref(nothing), comm.communicator, MPI.Status; tag=2
+                )
+                @debugCommPrintln("Got Eulerian request from $(status.source)")
+                lock(control.locks.eulerianRequest) do
+                    push!(inqRanks, status.source)
+                end
+            end
+            done = MPI.Test(breq)
         end
+
+        sreqs = Vector{MPI.Request}(undef, length(inqRanks))
+        for (i, inqHost) in enumerate(inqRanks)
+            lock(control.locks.eulerianComms[comm.jlRank]) do
+                @debugCommPrintln("Send U to $inqHost")
+                sreqs[i] = MPI.Isend(
+                    eulerian[comm.jlRank].U, comm.communicator, dest=inqHost,
+                    tag=0
+                )
+            end
+        end
+
+        for req in sreqs wait(req) end
+
         notify(control.events.U_copied)
         wait(control.events.Eulerian_computed)
-        lock(control.locks.EulerianComm[comm.jlRank]) do
-            rreq = MPI.Irecv!(
-                eulerian[comm.jlRank].UTrans, comm.communicator,
-                source=comm.masterRank, tag=1
-            )
-            wait(rreq)
-            estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
+
+        # Receive the source from host (assume a single host by now)
+        if !isempty(inqRanks)
+            @debugCommPrintln("Receive source from host")
+            lock(control.locks.eulerianComms[comm.jlRank]) do
+                rreq = MPI.Irecv!(
+                    eulerian[comm.jlRank].UTrans, comm.communicator;
+                    source=comm.masterRank, tag=1
+                )
+                wait(rreq)
+                estimate_source!(
+                    eulerian[comm.jlRank].UTrans, control.extrapolator
+                )
+            end
         end
+        empty!(inqRanks)
+
         notify(control.events.S_copied)
     end
     return nothing
@@ -591,6 +697,8 @@ function init_async_evolve!(
         end
     end
 
+    # Compile kernels and prepare configuration
+    # Pick any chunk for compilation - only types are important
     aChunk = first(chunks)
     kernel = @cuda launch=false evolve_on_device!(
         aChunk, reg["deviceEulerianPointer"], mesh, executor
@@ -598,62 +706,135 @@ function init_async_evolve!(
     config = launch_configuration(kernel.fun)
     threads = min(aChunk.N, config.threads)
     blocks = cld(aChunk.N, threads)
+    bbKernel = @cuda launch=false compute_bounding_box(aChunk, executor)
+
+    # Initialization: bounding boxes of chunks are required before the main
+    # kernel may be run
+    # Reset the bounding box in device memory
+    lock(control.locks.chunkTransfers) do
+        @sync begin
+            for (i, chunk) in enumerate(chunks)
+                @async begin
+                    hostChunkBb = BoundingBox{Vector{scalar}}(
+                        fill(Inf, 3), fill(-Inf, 3)
+                    )
+                    copy!(chunk.boundingBox, hostChunkBb)
+                    bbKernel(chunk, executor)
+                    copy!(hostChunkBb, chunk.boundingBox)
+                    determine!(
+                        comm.member.requiredEulerianRanks,
+                        hostChunkBb,
+                        mesh,
+                        control
+                    )
+                end
+            end
+        end
+    end
 
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
-        rreq = Vector{MPI.AbstractRequest}(undef, comm.size)
-        for i in 2:comm.size
-            lock(control.locks.EulerianComm[i])
-            rreq[i] = MPI.Irecv!(
-                eulerian[i].U, comm.communicator, source=i-1, tag=0
+        # Non-blocking consensus for processing Eulerian requests
+        reqRanks = lock(control.locks.eulerianRequest) do
+            # Exclude self from sending Eulerian requests
+            collect(setdiff(comm.member.requiredEulerianRanks, comm.rank))
+        end
+        nRequests = length(reqRanks)
+        # Rank indices are zero-based.  Derive a one-based iterator to iterate
+        # over arrays.  Zip these and consecutive range iterators for simpler
+        # handling.
+        reqRanks₁ = Iterators.map(x -> x+1, reqRanks)
+        zipIter = zip(1:nRequests, reqRanks, reqRanks₁)
+        sreqs = Vector{MPI.Request}(undef, nRequests)
+        rreqs = Vector{MPI.Request}(undef, nRequests)
+
+        # Buffer is empty since only the source of the message is relevant to
+        # the receiver
+        buf = MPI.Buffer_send(Ref(nothing))
+        for (i, iRank₀, iRank₁) in zipIter
+            @debugCommPrintln("Request Eulerian from $iRank₀")
+            sreqs[i] = Issend(buf, iRank₀, 2, comm.communicator)
+            # Setup receive for the requested field
+            lock(control.locks.eulerianComms[iRank₁])
+            rreqs[i] = MPI.Irecv!(
+                eulerian[iRank₁].U, comm.communicator, source=iRank₀, tag=0
             )
         end
+        for req in sreqs wait(req) end
+        wait(MPI.Ibarrier(comm.communicator))
 
         # Reset sources on the device to zero
         for de in reg["deviceEulerian"]
             fill!(de.UTrans, ScalarVec(0SCL, 0SCL, 0SCL))  #!!
         end
 
-        for i in 2:comm.size
-            wait(rreq[i])
-            unlock(control.locks.EulerianComm[i])
+        for (i, _, iRank₁) in zipIter
+            wait(rreqs[i])
+            unlock(control.locks.eulerianComms[iRank₁])
         end
 
-        for i in eachindex(eulerian)
-            lock(control.locks.EulerianComm[i]) do
-                copyto!(reg["deviceEulerian"][i].U, eulerian[i].U)
+        # Copy all required Eulerian to device memory
+        allReqRanks₁ =
+            Iterators.map(x -> x+1, comm.member.requiredEulerianRanks)
+        for iRank₁ in allReqRanks₁
+            lock(control.locks.eulerianComms[iRank₁]) do
+                copyto!(reg["deviceEulerian"][iRank₁].U, eulerian[iRank₁].U)
             end
         end
+
+        empty!(comm.member.requiredEulerianRanks)
 
         notify(control.events.U_copied)
 
-        println("Evolve particles"); flush(stdout)
-        for l in control.locks.EulerianComm
+        print("Evolve particles\n")
+
+        for l in control.locks.eulerianComms
             lock(l)
         end
-        lock(control.locks.Chunk) do
-            for chunk in chunks
-                kernel(
-                    chunk, reg["deviceEulerianPointer"], mesh, executor;
-                    threads, blocks
-                )
+        lock(control.locks.chunkTransfers) do
+            @sync begin
+                for (i, chunk) in enumerate(chunks)
+                    @async begin
+                        # Reset the bounding box in device memory
+                        hostChunkBb = BoundingBox{Vector{scalar}}(
+                            fill(Inf, 3), fill(-Inf, 3)
+                        )
+                        copy!(chunk.boundingBox, hostChunkBb)
+
+                        kernel(
+                            chunk, reg["deviceEulerianPointer"], mesh, executor;
+                            threads, blocks
+                        )
+
+                        copy!(hostChunkBb, chunk.boundingBox)
+                        determine!(
+                            comm.member.requiredEulerianRanks,
+                            hostChunkBb,
+                            mesh,
+                            control
+                        )
+
+                        nothing
+                    end
+                end
             end
-            CUDA.synchronize()
         end
-        for l in control.locks.EulerianComm
+        for l in control.locks.eulerianComms
             unlock(l)
         end
+
         tEvolve = time() - tStart
         global totalTime += tEvolve
-        println("Lagrangian solver: waiting time for evolve to finish = \
+        print("Lagrangian solver: waiting time for evolve to finish = \
             $(round(tEvolve, sigdigits=4)) s; total waiting time = \
-            $(round(totalTime, sigdigits=4)) s"
+            $(round(totalTime, sigdigits=4)) s\n"
         )
+
         wait(control.events.Eulerian_computed)
 
         # Correct and estimate the source
-        lock(control.locks.EulerianComm[comm.jlRank]) do
+        lock(control.locks.eulerianComms[comm.jlRank]) do
             copyto!(
                 eulerian[comm.jlRank].UTrans,
                 reg["deviceEulerian"][comm.jlRank].UTrans
@@ -664,17 +845,21 @@ function init_async_evolve!(
         notify(control.events.S_copied)
 
         # Copy sources to CPU and send them to slaves
-        sreq = Vector{MPI.AbstractRequest}(undef, comm.size)
-        for i in 2:comm.size
-            lock(control.locks.EulerianComm[i])
-            copyto!(eulerian[i].UTrans, reg["deviceEulerian"][i].UTrans)
-            sreq[i] = MPI.Isend(
-                eulerian[i].UTrans, comm.communicator, dest=i-1, tag=1
+        sreqs = fill(MPI.Request(), nRequests)
+        for (i, iRank₀, iRank₁) in zipIter
+            @debugCommPrintln("Send source to $iRank₀")
+            lock(control.locks.eulerianComms[iRank₁])
+            copyto!(
+                eulerian[iRank₁].UTrans,
+                reg["deviceEulerian"][iRank₁].UTrans
+            )
+            sreqs[i] = MPI.Isend(
+                eulerian[iRank₁].UTrans, comm.communicator, dest=iRank₀, tag=1
             )
         end
-        for i in 2:comm.size
-            wait(sreq[i])
-            unlock(control.locks.EulerianComm[i])
+        for (i, _, iRank₁) in zipIter
+            wait(sreqs[i])
+            unlock(control.locks.eulerianComms[iRank₁])
         end
     end
     return nothing
@@ -682,14 +867,26 @@ end
 
 # Drives evolve on GPU
 function evolve!(control, ::GPU)
-    unlock(control.locks.EulerianComm[comm.jlRank])
+    unlock(control.locks.eulerianComms[comm.jlRank])
     if !firstPass
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
     end
     global firstPass = false
     wait(control.events.U_copied)
-    lock(control.locks.EulerianComm[comm.jlRank])
+    lock(control.locks.eulerianComms[comm.jlRank])
+    return nothing
+end
+
+function compute_bounding_box(chunk, executor::GPU)
+    @inbounds begin
+        c = chunk
+        i = (blockIdx().x - 1LBL) * blockDim().x + threadIdx().x
+        if(i <= c.N)
+            pos = ScalarVec(c.X[i], c.Y[i], c.Z[i])
+            update!(c.boundingBox, pos, executor)
+        end
+    end
     return nothing
 end
 
@@ -798,7 +995,7 @@ end
         c.V[i] = velNew.y
         c.W[i] = velNew.z
         update!(eulerian, state0, velNew, posI, mᵈByρᶜ, executor)
-        update!(chunk.boundingBox, posNew, i, executor)
+        update!(c.boundingBox, posNew, executor)
     end
     return nothing
 end
@@ -833,7 +1030,7 @@ function write(chunk, ::GPU)
     if !(haskey(reg, "hostChunk"))
         reg["hostChunk"] = allocate_chunk(CPU(), c.N, c.μᶜ, c.ρ, c.ρᵈByρᶜ)
     end
-    lock(control.locks.Chunk) do
+    lock(control.locks.chunkTransfers) do
         copy!(reg["hostChunk"], c)
     end
     write(reg["hostChunk"], CPU())
@@ -842,11 +1039,12 @@ end
 
 function write(chunks, ::Comm{Master}, executor)
     GC.enable(false)
-    write(chunk, executor)
+    # TODO Enable writing for all chunks, not only the first one
+    write(first(chunks), executor)
     GC.enable(true)
 end
 
-function write(chunk, ::Comm{<:CommRole}, executor) end
+function write(chunk, ::Comm{<:CommMember}, executor) end
 
 function write_paraview_collection(::Comm{Master})
     GC.enable(false)
@@ -865,7 +1063,7 @@ function write_paraview_collection(::Comm{Master})
     return nothing
 end
 
-function write_paraview_collection(::Comm{<:CommRole}) end
+function write_paraview_collection(::Comm{<:CommMember}) end
 
 
 ###############################################################################
@@ -926,7 +1124,7 @@ function evolve_cloud(Δt)
     GC.enable(false)
 
     if comm.isMaster
-        println("Evolve cloud")
+        print("Evolve cloud\n")
         for chunk in chunks
             increment_time!(chunk, Δt, comm, executor)
         end
@@ -944,9 +1142,8 @@ const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
 
 ###############################################################################
 # Global data init
-comm = initComm()
+const comm = initComm()
 
-println("Load asyncParallelTracking")
 println("Julia active project: ", Base.active_project())
 
 nParticles = 800_000_000  # RTX3090
@@ -992,14 +1189,6 @@ control = Control(
 # Allocate Eulerian fields
 reg["eulerian"] = Vector{TwoWayEulerian{VectorField}}(undef, comm.size)
 
-# Create random velocity field when running in REPL
-if isinteractive()
-    for eulerian in reg["eulerian"]
-        init_random!(eulerian.U, 2SCL, -1SCL)
-    end
-    tNow = timing(tNow, "Initialized velocity field")
-end
-
 tNow = time()
 tStart = time()
 totalTime = 0.0
@@ -1007,8 +1196,9 @@ firstPass = true
 
 # Lock own Eulerian to put async evolve on wait until it's notified by call to
 # evolve_cloud from OF
-lock(control.locks.EulerianComm[comm.jlRank])
+lock(control.locks.eulerianComms[comm.jlRank])
 
+GC.enable(false)
 if comm.isMaster
     chunks = Vector{Chunk}(undef, nChunks)
     for i in eachindex(chunks)
@@ -1049,8 +1239,15 @@ flush(stderr)
 
 # Test few time steps when running in REPL
 if isinteractive()
+    # Create random velocity field
+    for eulerian in reg["eulerian"]
+        init_random!(eulerian.U, 2SCL, -1SCL)
+    end
+    tNow = timing(tNow, "Initialized velocity field")
+
     evolve_cloud(1e-3)
     evolve_cloud(1e-3)
 end
 
+GC.enable(true)
 ###############################################################################

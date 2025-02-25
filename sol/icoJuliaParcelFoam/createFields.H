@@ -19,6 +19,7 @@ dimensionedScalar nu
     transportProperties
 );
 
+Info<< "Load Julia program\n" << endl;
 jl_eval_string_with_exception("include(\"./asyncParallelTracking.jl\")");
 
 typedef void* (*evolveFunctionType) (const double);
