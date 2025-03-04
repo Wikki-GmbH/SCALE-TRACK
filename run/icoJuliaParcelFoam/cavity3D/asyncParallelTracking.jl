@@ -71,8 +71,8 @@ macro debugCommPrintln(ex)
     return nothing
 end
 
-# Wrapper for MPI non-blocking synchronous send
-function Issend(buf::MPI.Buffer, dest::Integer, tag::Integer, comm::MPI.Comm,
+# Wrapper for MPI non-blocking synchronous send unavailable in MPI.jl
+function comm_Issend(buf::MPI.Buffer, dest::Integer, tag::Integer, comm::MPI.Comm,
         req::MPI.AbstractRequest=MPI.Request()
 )
     @assert MPI.isnull(req)
@@ -81,6 +81,38 @@ function Issend(buf::MPI.Buffer, dest::Integer, tag::Integer, comm::MPI.Comm,
     MPI.API.MPI_Issend(buf.data, buf.count, buf.datatype, dest, tag, comm, req)
     MPI.setbuffer!(req, buf)
     return req
+end
+
+# Wrapper for MPI Iprobe that does not allocate flag
+function comm_Iprobe(
+    comm::MPI.Comm, flag, status=nothing;
+    source::Integer=MPI.API.MPI_ANY_SOURCE[], tag::Integer=MPI.API.MPI_ANY_TAG[]
+)
+    MPI.API.MPI_Iprobe(
+        source, tag, comm, flag, something(status, MPI.API.MPI_STATUS_IGNORE[])
+    )
+    return flag[] != 0
+end
+
+# Wrapper for MPI Test that does not allocate flag
+function comm_test(
+    req::MPI.AbstractRequest, flag,
+    status::Union{Ref{MPI.Status}, Nothing}=nothing
+)
+    # int MPI_Test(MPI_Request *request, int *flag, MPI_Status *status)
+    MPI.API.MPI_Test(req, flag, something(status, MPI.API.MPI_STATUS_IGNORE[]))
+    if MPI.isnull(req)
+        MPI.setbuffer!(req, nothing)
+    end
+    return flag[] != 0
+end
+
+# Alternative implementation of Base.wait that allocates flag only once
+function comm_wait(req::MPI.Request)
+    flag = Ref{Cint}()
+    while !comm_test(req, flag)
+        yield()
+    end
 end
 
 ###############################################################################
@@ -514,7 +546,7 @@ end
 # estSⁿ = trueSⁿ⁻¹ - estSⁿ⁻¹ + extrapSⁿ, with extrapSⁿ = trueSⁿ⁻¹
 function estimate_source!(currUTrans, extrapolator::ConstExtrapolator)
     currUTrans .= 2.0.*currUTrans .- extrapolator.prevUTrans
-    for i in eachindex(control.extrapolator.prevUTrans)
+    for i in eachindex(extrapolator.prevUTrans)
         @inbounds extrapolator.prevUTrans[i] = currUTrans[i]
     end
 end
@@ -616,12 +648,13 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
     # specifically yielded at "lock" and "wait"
     while true
         # Non-blocking consensus for processing Eulerian requests
-        done = false
+        barrierFlag = Ref{Cint}(0)
+        probeFlag = Ref{Cint}(0)
         # Nothing to send, hence, set the barrier directly
         breq = MPI.Ibarrier(comm.communicator)
         inqRanks = comm.member.inquiringEulerianRanks
-        while !done
-            isMsg = MPI.Iprobe(comm.communicator, tag=2)
+        while barrierFlag[] == 0
+            isMsg = comm_Iprobe(comm.communicator, probeFlag; tag=2)
             if isMsg
                 _, status = MPI.Recv!(
                     Ref(nothing), comm.communicator, MPI.Status; tag=2
@@ -631,7 +664,7 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
                     push!(inqRanks, status.source)
                 end
             end
-            done = MPI.Test(breq)
+            comm_test(breq, barrierFlag)
         end
 
         sreqs = Vector{MPI.Request}(undef, length(inqRanks))
@@ -645,7 +678,7 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
             end
         end
 
-        for req in sreqs wait(req) end
+        for req in sreqs comm_wait(req) end
 
         notify(control.events.U_copied)
         wait(control.events.Eulerian_computed)
@@ -658,7 +691,7 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
                     eulerian[comm.jlRank].UTrans, comm.communicator;
                     source=comm.masterRank, tag=1
                 )
-                wait(rreq)
+                comm_wait(rreq)
                 estimate_source!(
                     eulerian[comm.jlRank].UTrans, control.extrapolator
                 )
@@ -754,7 +787,7 @@ function init_async_evolve!(
         buf = MPI.Buffer_send(Ref(nothing))
         for (i, iRank₀, iRank₁) in zipIter
             @debugCommPrintln("Request Eulerian from $iRank₀")
-            sreqs[i] = Issend(buf, iRank₀, 2, comm.communicator)
+            sreqs[i] = comm_Issend(buf, iRank₀, 2, comm.communicator)
             # Setup receive for the requested field
             lock(control.locks.eulerianComms[iRank₁])
             rreqs[i] = MPI.Irecv!(
@@ -1119,8 +1152,15 @@ const allocate_array_ptr =
 function evolve_cloud(Δt)
     # Workaround for the segmentation fault error when using multiple Julia
     # threads.  The error occurs when the garbage collector (GC) is triggered
-    # in more than one thread at the same time.  Thus, disable GC in the
-    # affected functions.
+    # in more than one thread at the same time.  Thus, trigger GC manually and
+    # then disable it in the affected functions.
+    global reg
+    if reg["timestepsSinceLastGC"] >= reg["noGcTimestepInterval"]
+        GC.gc()
+        reg["timestepsSinceLastGC"] = 1
+    else
+        reg["timestepsSinceLastGC"] += 1
+    end
     GC.enable(false)
 
     if comm.isMaster
@@ -1180,6 +1220,8 @@ end
 @show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending decomposition
 
 reg = Dict()
+reg["noGcTimestepInterval"] = 100
+reg["timestepsSinceLastGC"] = 1
 
 mesh = Mesh(nCellsPerDirection, origin, ending, decomposition)
 control = Control(
