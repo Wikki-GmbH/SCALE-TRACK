@@ -1107,8 +1107,7 @@ function allocate_array_j(
     )::Ptr{Cdouble}
     GC.enable(false)
 
-    GC.@preserve name
-    s = unsafe_string(pointer(name))
+    GC.@preserve name nameSymbol = Symbol(unsafe_string(pointer(name)))
 
     if Int(typeByteSize) != Int(sizeof(scalar))
         throw(
@@ -1126,14 +1125,15 @@ function allocate_array_j(
             ErrorException(
                 string(
                     "Size of Julia mesh: ", prod(mesh.partitionN),
-                    " is different from field's ", s, " size: ", Int(size)
+                    " is different from field's ", nameSymbol, " size: ",
+                    Int(size)
                 )
             )
         )
     end
 
     # By now, assume that the requested field already has been allocated
-    field = getfield(reg["eulerian"][comm.jlRank], Symbol(s))
+    field = getfield(reg["eulerian"][comm.jlRank], nameSymbol)
     # nComponents needs to be Int
     # n = Int(nComponents)
     # if (n == 1)
