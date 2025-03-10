@@ -313,10 +313,12 @@ Adapt.@adapt_structure Chunk
 abstract type CommMember end
 
 struct Master <: CommMember
+    deviceNumber::label
     requiredEulerianRanks::Set{label}
+    inquiringEulerianRanks::Vector{label}
 end
 
-Master() = Master(Set{label}())
+Master(deviceNumber) = Master(deviceNumber, Set{label}(), Vector{label}())
 
 struct Slave <: CommMember
     inquiringEulerianRanks::Vector{label}
@@ -328,6 +330,7 @@ struct Comm{T<:CommMember}
     member::T
     communicator::MPI.Comm
     isMaster::Bool
+    isHost::Bool
     rank::Integer
     jlRank::Integer
     masterRank::Integer
@@ -335,13 +338,15 @@ struct Comm{T<:CommMember}
 end
 
 function Comm(member, communicator)
-    isMaster = (typeof(member) == Master)
     if MPI.Initialized()
         rank = MPI.Comm_rank(communicator)
+        isMaster = (rank == 0)
+        isHost = (typeof(member) == Master)
         return Comm(
             member,
             communicator,
             isMaster,
+            isHost,
             rank,
             rank + 1,
             0,
@@ -349,7 +354,7 @@ function Comm(member, communicator)
         )
     else
         rank = 0
-        return Comm(member, communicator, isMaster, rank, rank + 1, 0, 1)
+        return Comm(member, communicator, true, true, rank, rank + 1, 0, 1)
     end
 end
 
@@ -360,28 +365,43 @@ struct GPU end
 
 ###############################################################################
 # Methods
-function initComm()
+function initComm(executor)
     if MPI.Initialized() && MPI.JULIA_TYPE_PTR_ATTR[]==0
         MPI.run_init_hooks()
     else
-        # Construct communication with a single rank, if MPI is not initialized
+        # Construct communication with a single rank and executor
         MPI.Init()
-        return Comm(Master(), MPI.COMM_WORLD)
     end
 
-    rank = MPI.Comm_rank(MPI.COMM_WORLD)
+    nDevicesPerNode = count_devices_per_node(executor)
+    shmComm = MPI.Comm_split_type(MPI.COMM_WORLD, MPI.COMM_TYPE_SHARED, 0)
+    shmRank = MPI.Comm_rank(shmComm)
+    nRanksPerNode = MPI.Allreduce(shmRank, max, shmComm) + 1
+    hostStride = nRanksPerNode ÷ nDevicesPerNode
+    # Prevent 0 stride
+    hostStride = hostStride < 1 ? 1 : hostStride
+    # Assign devices to ranks uniformly
+    hostRanks =
+        range(0, step=hostStride, length=min(nRanksPerNode, nDevicesPerNode))
 
-    if rank == 0
-        comm = Comm(Master(), MPI.COMM_WORLD)
-        MPI.versioninfo()
+    if shmRank in hostRanks
+        deviceNumber = shmRank ÷ hostStride
+        CUDA.device!(deviceNumber)
+        comm = Comm(Master(deviceNumber), MPI.COMM_WORLD)
     else
         comm = Comm(Slave(), MPI.COMM_WORLD)
-        if !DebugComm
-            # Suppress output from the slave ranks
-            redirect_stdout(devnull)
-        end
     end
+
+    if !DebugComm && !comm.isMaster
+        # Suppress output from non-master ranks
+        redirect_stdout(devnull)
+    end
+
     return comm
+end
+
+function count_devices_per_node(::GPU)
+    return length(CUDA.devices())
 end
 
 function allocate_chunk(::CPU, constructorArgs...)
@@ -643,9 +663,40 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
     return nothing
 end
 
+function serve_eulerian(inquiringEulerianRanks, eulerian, comm, control)
+    sreqs = Vector{MPI.Request}(undef, length(inquiringEulerianRanks))
+    for (i, inqHost) in enumerate(inquiringEulerianRanks)
+        lock(control.locks.eulerianComms[comm.jlRank]) do
+            @debugCommPrintln("Send U to $inqHost")
+            sreqs[i] = MPI.Isend(
+                eulerian[comm.jlRank].U, comm.communicator, dest=inqHost,
+                tag=0
+            )
+        end
+    end
+    return sreqs
+end
+
+function receive_sources(inquiringEulerianRanks, comm, eulerian)
+    inqRanks = inquiringEulerianRanks
+    sourceRreqs = Vector{MPI.Request}(undef, length(inqRanks))
+    sourceBuffers = Vector{VectorField}(undef, length(inqRanks))
+    if !isempty(inqRanks)
+        for (i, inqRank) in enumerate(inqRanks)
+            @debugCommPrintln("Receive source from $inqRank")
+            sourceBuffers[i] = similar(eulerian[comm.jlRank].UTrans)
+            sourceRreqs[i] = MPI.Irecv!(
+                sourceBuffers[i], comm.communicator; source=inqRank, tag=1
+            )
+        end
+    end
+    return (sourceRreqs, sourceBuffers)
+end
+
 function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
+    GC.enable(false)
     while true
         # Non-blocking consensus for processing Eulerian requests
         barrierFlag = Ref{Cint}(0)
@@ -667,36 +718,25 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
             comm_test(breq, barrierFlag)
         end
 
-        sreqs = Vector{MPI.Request}(undef, length(inqRanks))
-        for (i, inqHost) in enumerate(inqRanks)
-            lock(control.locks.eulerianComms[comm.jlRank]) do
-                @debugCommPrintln("Send U to $inqHost")
-                sreqs[i] = MPI.Isend(
-                    eulerian[comm.jlRank].U, comm.communicator, dest=inqHost,
-                    tag=0
-                )
-            end
-        end
+        eulerianSreqs = serve_eulerian(inqRanks, eulerian, comm, control)
+        for req in eulerianSreqs comm_wait(req) end
 
-        for req in sreqs comm_wait(req) end
+        # Enable garbage collector at the same time as other thread
+        GC.enable(true)
 
         notify(control.events.U_copied)
         wait(control.events.Eulerian_computed)
+        GC.enable(false)
 
-        # Receive the source from host (assume a single host by now)
-        if !isempty(inqRanks)
-            @debugCommPrintln("Receive source from host")
-            lock(control.locks.eulerianComms[comm.jlRank]) do
-                rreq = MPI.Irecv!(
-                    eulerian[comm.jlRank].UTrans, comm.communicator;
-                    source=comm.masterRank, tag=1
-                )
-                comm_wait(rreq)
-                estimate_source!(
-                    eulerian[comm.jlRank].UTrans, control.extrapolator
-                )
+        sourceRreqs, sourceBuffers = receive_sources(inqRanks, comm, eulerian)
+        lock(control.locks.eulerianComms[comm.jlRank]) do
+            for (i, req) in enumerate(sourceRreqs)
+                comm_wait(req)
+                eulerian[comm.jlRank].UTrans .+= sourceBuffers[i]
             end
         end
+
+        estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
         empty!(inqRanks)
 
         notify(control.events.S_copied)
@@ -708,6 +748,10 @@ end
 function init_async_evolve!(
     chunks, eulerian, mesh, control, comm::Comm{Master}, executor::GPU
 )
+    GC.enable(false)
+    CUDA.device!(comm.member.deviceNumber)
+    @debugCommPrintln("Hosting device $(CUDA.device())")
+
     if !haskey(reg, "deviceEulerian")
         # CUDA containers that own the Eulerian fields on the device
         reg["deviceEulerian"] =
@@ -784,6 +828,7 @@ function init_async_evolve!(
 
         # Buffer is empty since only the source of the message is relevant to
         # the receiver
+        inqRanks = comm.member.inquiringEulerianRanks
         buf = MPI.Buffer_send(Ref(nothing))
         for (i, iRank₀, iRank₁) in zipIter
             @debugCommPrintln("Request Eulerian from $iRank₀")
@@ -794,16 +839,40 @@ function init_async_evolve!(
                 eulerian[iRank₁].U, comm.communicator, source=iRank₀, tag=0
             )
         end
-        for req in sreqs wait(req) end
-        wait(MPI.Ibarrier(comm.communicator))
+        barrierOn = false
+        barrierFlag = Ref{Cint}(0)
+        probeFlag = Ref{Cint}(0)
+        breq = MPI.Request()
+        while barrierFlag[] == 0
+            isMsg = comm_Iprobe(comm.communicator, probeFlag; tag=2)
+            if isMsg
+                _, status = MPI.Recv!(
+                    Ref(nothing), comm.communicator, MPI.Status; tag=2
+                )
+                @debugCommPrintln("Got Eulerian request from $(status.source)")
+                lock(control.locks.eulerianRequest) do
+                    push!(inqRanks, status.source)
+                end
+            end
+            if barrierOn
+                comm_test(breq, barrierFlag)
+            elseif MPI.Testall(sreqs)
+                breq = MPI.Ibarrier(comm.communicator)
+                barrierOn = true
+            end
+        end
+
+        eulerianSreqs = serve_eulerian(inqRanks, eulerian, comm, control)
 
         # Reset sources on the device to zero
         for de in reg["deviceEulerian"]
             fill!(de.UTrans, ScalarVec(0SCL, 0SCL, 0SCL))  #!!
         end
 
+        for req in eulerianSreqs comm_wait(req) end
+
         for (i, _, iRank₁) in zipIter
-            wait(rreqs[i])
+            comm_wait(rreqs[i])
             unlock(control.locks.eulerianComms[iRank₁])
         end
 
@@ -818,6 +887,8 @@ function init_async_evolve!(
 
         empty!(comm.member.requiredEulerianRanks)
 
+        # Enable garbage collector at the same time as other thread
+        GC.enable(true)
         notify(control.events.U_copied)
 
         print("Evolve particles\n")
@@ -865,6 +936,7 @@ function init_async_evolve!(
         )
 
         wait(control.events.Eulerian_computed)
+        GC.enable(false)
 
         # Correct and estimate the source
         lock(control.locks.eulerianComms[comm.jlRank]) do
@@ -875,25 +947,38 @@ function init_async_evolve!(
             estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
         end
 
-        notify(control.events.S_copied)
+        sourceRreqs, sourceBuffers = receive_sources(inqRanks, comm, eulerian)
 
         # Copy sources to CPU and send them to slaves
-        sreqs = fill(MPI.Request(), nRequests)
+        sourceSreqs = Vector{MPI.Request}(undef, nRequests)
+
         for (i, iRank₀, iRank₁) in zipIter
             @debugCommPrintln("Send source to $iRank₀")
             lock(control.locks.eulerianComms[iRank₁])
             copyto!(
-                eulerian[iRank₁].UTrans,
-                reg["deviceEulerian"][iRank₁].UTrans
+                eulerian[iRank₁].UTrans, reg["deviceEulerian"][iRank₁].UTrans
             )
-            sreqs[i] = MPI.Isend(
+            sourceSreqs[i] = MPI.Isend(
                 eulerian[iRank₁].UTrans, comm.communicator, dest=iRank₀, tag=1
             )
         end
+
         for (i, _, iRank₁) in zipIter
-            wait(sreqs[i])
+            comm_wait(sourceSreqs[i])
             unlock(control.locks.eulerianComms[iRank₁])
         end
+
+        lock(control.locks.eulerianComms[comm.jlRank]) do
+            for (i, req) in enumerate(sourceRreqs)
+                comm_wait(req)
+                eulerian[comm.jlRank].UTrans .+= sourceBuffers[i]
+            end
+            estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
+        end
+
+        empty!(inqRanks)
+
+        notify(control.events.S_copied)
     end
     return nothing
 end
@@ -1070,10 +1155,10 @@ function write(chunk, ::GPU)
     return nothing
 end
 
-function write(chunks, ::Comm{Master}, executor)
+function write(chunks, comm::Comm{Master}, executor)
     GC.enable(false)
     # TODO Enable writing for all chunks, not only the first one
-    write(first(chunks), executor)
+    if comm.isMaster write(first(chunks), executor) end
     GC.enable(true)
 end
 
@@ -1141,9 +1226,9 @@ function allocate_array_j(
     # else
     #     field = Vector{SVector{n, scalar}}(undef, size)
     # end
-
+    GC.@preserve field cFieldPtr = Base.unsafe_convert(Ptr{Cdouble}, field)
     GC.enable(true)
-    return Base.unsafe_convert(Ptr{Cdouble}, field)
+    return cFieldPtr
 end
 
 const allocate_array_ptr =
@@ -1182,7 +1267,10 @@ const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
 
 ###############################################################################
 # Global data init
-const comm = initComm()
+executor = GPU()
+# executor = CPU()
+
+const comm = initComm(executor)
 
 println("Julia active project: ", Base.active_project())
 
@@ -1194,9 +1282,6 @@ nParticles = 100_000  # GT710
 
 nChunks = 10
 # nChunks = 1
-
-executor = GPU()
-# executor = CPU()
 
 μᶜ = 1e-3
 ρᶜ = 1e3
@@ -1214,7 +1299,7 @@ if comm.size == 1
     decomposition = (1, 1, 1)
 else
     # Decomposition coefficients need to be the same as in the decomposeParDict
-    decomposition = (2, 2, 1)
+    decomposition = (2, 2, 5)
 end
 
 @show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending decomposition
@@ -1241,7 +1326,7 @@ firstPass = true
 lock(control.locks.eulerianComms[comm.jlRank])
 
 GC.enable(false)
-if comm.isMaster
+if comm.isHost
     chunks = Vector{Chunk}(undef, nChunks)
     for i in eachindex(chunks)
         chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
