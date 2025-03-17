@@ -437,11 +437,21 @@ function increment_time!(chunk, Δt, executor::GPU)
     set_time!(chunk, t + Δt, Δt, executor)
 end
 
+function default_rng(::CPU)
+    return Random.default_rng()
+end
+
+# Use CUDA random number generator to enable processing on the device without
+# copying to host
+function default_rng(::GPU)
+    return CUDA.default_rng()
+end
+
 function init!(chunk, mesh, executor, randSeed=19891)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 
-    rng = Random.default_rng()
+    rng = default_rng(executor)
     Random.seed!(rng, randSeed)
     fill!(c.boundingBox.min, 0.0)
     fill!(c.boundingBox.max, 0.0)
