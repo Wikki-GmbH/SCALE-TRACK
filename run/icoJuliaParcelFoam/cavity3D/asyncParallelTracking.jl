@@ -26,6 +26,10 @@
     with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
 =#
 
+tNow = time()
+const reg = Dict()
+reg["gc_num"] = Base.gc_num()
+
 using Random
 # using Distributions  # Hangs when profiling with Nsight
 using WriteVTK
@@ -38,12 +42,14 @@ using Accessors
 using MPI
 using Base.Threads
 
+ΔtLoadModules = time() - tNow
+
 ###############################################################################
 # Compile-time globals
 
 # Debug communication logging.  If true, Log to stdout from every rank prefixed
 # by [rank].
-DebugComm = true
+DebugComm = false
 
 ###############################################################################
 # Auxiliary Methods
@@ -380,10 +386,10 @@ function initComm(executor)
     hostStride = nRanksPerNode ÷ nDevicesPerNode
     # Prevent 0 stride
     hostStride = hostStride < 1 ? 1 : hostStride
+
     # Assign devices to ranks uniformly
     hostRanks =
         range(0, step=hostStride, length=min(nRanksPerNode, nDevicesPerNode))
-
     if shmRank in hostRanks
         deviceNumber = shmRank ÷ hostStride
         CUDA.device!(deviceNumber)
@@ -713,21 +719,31 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
         probeFlag = Ref{Cint}(0)
         # Nothing to send, hence, set the barrier directly
         breq = MPI.Ibarrier(comm.communicator)
+        sreqs = Vector{MPI.Request}()
         inqRanks = comm.member.inquiringEulerianRanks
         while barrierFlag[] == 0
-            isMsg = comm_Iprobe(comm.communicator, probeFlag; tag=2)
-            if isMsg
+            comm_Iprobe(comm.communicator, probeFlag; tag=2)
+            if probeFlag[] != 0
+                probeFlag[] = 0
+                bufRef = Ref(41)
                 _, status = MPI.Recv!(
-                    Ref(nothing), comm.communicator, MPI.Status; tag=2
+                    MPI.Buffer(bufRef), comm.communicator, MPI.Status; tag=2
                 )
+                sreq = MPI.Isend(
+                    MPI.Buffer_send(42), status.source, 3, comm.communicator
+                )
+                push!(sreqs, sreq)
+
                 @debugCommPrintln("Got Eulerian request from $(status.source)")
                 lock(control.locks.eulerianRequest) do
                     push!(inqRanks, status.source)
                 end
             end
+            MPI.Testall(sreqs)
             comm_test(breq, barrierFlag)
         end
 
+        for req in sreqs comm_wait(req) end
         eulerianSreqs = serve_eulerian(inqRanks, eulerian, comm, control)
         for req in eulerianSreqs comm_wait(req) end
 
@@ -833,16 +849,19 @@ function init_async_evolve!(
         # handling.
         reqRanks₁ = Iterators.map(x -> x+1, reqRanks)
         zipIter = zip(1:nRequests, reqRanks, reqRanks₁)
-        sreqs = Vector{MPI.Request}(undef, nRequests)
+        sreqs = Vector{MPI.Request}(undef, 2*nRequests)
         rreqs = Vector{MPI.Request}(undef, nRequests)
 
         # Buffer is empty since only the source of the message is relevant to
         # the receiver
         inqRanks = comm.member.inquiringEulerianRanks
-        buf = MPI.Buffer_send(Ref(nothing))
         for (i, iRank₀, iRank₁) in zipIter
             @debugCommPrintln("Request Eulerian from $iRank₀")
-            sreqs[i] = comm_Issend(buf, iRank₀, 2, comm.communicator)
+            sreqs[i] =
+                MPI.Isend(MPI.Buffer_send(42), iRank₀, 2, comm.communicator)
+            bufRef = Ref(41)
+            sreqs[nRequests + i] =
+                MPI.Irecv!(MPI.Buffer(bufRef), iRank₀, 3, comm.communicator)
             # Setup receive for the requested field
             lock(control.locks.eulerianComms[iRank₁])
             rreqs[i] = MPI.Irecv!(
@@ -854,11 +873,17 @@ function init_async_evolve!(
         probeFlag = Ref{Cint}(0)
         breq = MPI.Request()
         while barrierFlag[] == 0
-            isMsg = comm_Iprobe(comm.communicator, probeFlag; tag=2)
-            if isMsg
+            comm_Iprobe(comm.communicator, probeFlag; tag=2)
+            if probeFlag[] != 0
+                probeFlag[] = 0
+                bufRef = Ref(41)
                 _, status = MPI.Recv!(
-                    Ref(nothing), comm.communicator, MPI.Status; tag=2
+                    MPI.Buffer(bufRef), comm.communicator, MPI.Status; tag=2
                 )
+                sreq = MPI.Isend(
+                    MPI.Buffer_send(42), status.source, 3, comm.communicator
+                )
+                push!(sreqs, sreq)
                 @debugCommPrintln("Got Eulerian request from $(status.source)")
                 lock(control.locks.eulerianRequest) do
                     push!(inqRanks, status.source)
@@ -1203,6 +1228,7 @@ function allocate_array_j(
     GC.enable(false)
 
     GC.@preserve name nameSymbol = Symbol(unsafe_string(pointer(name)))
+    print("Allocating $nameSymbol\n")
 
     if Int(typeByteSize) != Int(sizeof(scalar))
         throw(
@@ -1237,6 +1263,7 @@ function allocate_array_j(
     #     field = Vector{SVector{n, scalar}}(undef, size)
     # end
     GC.@preserve field cFieldPtr = Base.unsafe_convert(Ptr{Cdouble}, field)
+    print("Allocating $nameSymbol done\n")
     GC.enable(true)
     return cFieldPtr
 end
@@ -1250,11 +1277,16 @@ function evolve_cloud(Δt)
     # in more than one thread at the same time.  Thus, trigger GC manually and
     # then disable it in the affected functions.
     global reg
+    GC.enable(true)
+    reg["timestepsSinceLastGC"] += 1
     if reg["timestepsSinceLastGC"] >= reg["noGcTimestepInterval"]
+        gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
+        reg["gc_num"] = Base.gc_num()
+        tNow = time()
         GC.gc()
-        reg["timestepsSinceLastGC"] = 1
-    else
-        reg["timestepsSinceLastGC"] += 1
+        reg["timestepsSinceLastGC"] = 0
+        timing(tNow, "Run garbage collection")
+        println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
     end
     GC.enable(false)
 
@@ -1276,11 +1308,18 @@ end
 const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
 
 ###############################################################################
+GC.enable(false)
+
+ΔtInitMethods = time() - ΔtLoadModules
+
 # Global data init
 executor = GPU()
 # executor = CPU()
 
 const comm = initComm(executor)
+println("Loaded modules in ", round(ΔtLoadModules; sigdigits=4), " s")
+println("Initialized methods in ", round(ΔtInitMethods; sigdigits=4), " s")
+tNow = timing(ΔtInitMethods, "Initialized communication")
 
 println("Julia active project: ", Base.active_project())
 
@@ -1312,21 +1351,23 @@ else
     decomposition = (2, 2, 5)
 end
 
-@show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending decomposition
-
-reg = Dict()
 reg["noGcTimestepInterval"] = 100
-reg["timestepsSinceLastGC"] = 1
+reg["timestepsSinceLastGC"] = 0
+
+@show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending decomposition
+@show reg["noGcTimestepInterval"]
 
 mesh = Mesh(nCellsPerDirection, origin, ending, decomposition)
+tNow = timing(tNow, "Initialized mesh")
 control = Control(
     Locks(comm.size), Events(), ConstExtrapolator(prod(mesh.partitionN))
 )
+tNow = timing(tNow, "Initialized control")
 
 # Allocate Eulerian fields
 reg["eulerian"] = Vector{TwoWayEulerian{VectorField}}(undef, comm.size)
+tNow = timing(tNow, "Allocated Eulerian ranks array")
 
-tNow = time()
 tStart = time()
 totalTime = 0.0
 firstPass = true
@@ -1335,7 +1376,6 @@ firstPass = true
 # evolve_cloud from OF
 lock(control.locks.eulerianComms[comm.jlRank])
 
-GC.enable(false)
 if comm.isHost
     chunks = Vector{Chunk}(undef, nChunks)
     for i in eachindex(chunks)
@@ -1370,10 +1410,6 @@ else
     )
 end
 
-println("Load asyncParallelTracking done\n")
-flush(stdout)
-flush(stderr)
-
 # Test few time steps when running in REPL
 if isinteractive()
     # Create random velocity field
@@ -1386,5 +1422,12 @@ if isinteractive()
     evolve_cloud(1e-3)
 end
 
-GC.enable(true)
+gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
+reg["gc_num"] = Base.gc_num()
+println("Julia allocations during startup: $(gcDiff.allocd/1e6) MB")
+
+println("Load asyncParallelTracking done\n")
+flush(stdout)
+flush(stderr)
+
 ###############################################################################
