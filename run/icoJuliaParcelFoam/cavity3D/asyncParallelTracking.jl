@@ -41,6 +41,7 @@ import Base: *, Event
 using Accessors
 using MPI
 using Base.Threads
+using HilbertSpaceFillingCurve
 
 ΔtLoadModules = time() - tNow
 
@@ -322,9 +323,10 @@ struct Master <: CommMember
     deviceNumber::label
     requiredEulerianRanks::Set{label}
     inquiringEulerianRanks::Vector{label}
+    hostCommunicator::MPI.Comm
 end
 
-Master(deviceNumber) = Master(deviceNumber, Set{label}(), Vector{label}())
+Master(deviceNumber, hostCommunicator) = Master(deviceNumber, Set{label}(), Vector{label}(), hostCommunicator)
 
 struct Slave <: CommMember
     inquiringEulerianRanks::Vector{label}
@@ -382,7 +384,7 @@ function initComm(executor)
     nDevicesPerNode = count_devices_per_node(executor)
     shmComm = MPI.Comm_split_type(MPI.COMM_WORLD, MPI.COMM_TYPE_SHARED, 0)
     shmRank = MPI.Comm_rank(shmComm)
-    nRanksPerNode = MPI.Allreduce(shmRank, max, shmComm) + 1
+    nRanksPerNode = MPI.Comm_size(shmComm)
     hostStride = nRanksPerNode ÷ nDevicesPerNode
     # Prevent 0 stride
     hostStride = hostStride < 1 ? 1 : hostStride
@@ -391,10 +393,12 @@ function initComm(executor)
     hostRanks =
         range(0, step=hostStride, length=min(nRanksPerNode, nDevicesPerNode))
     if shmRank in hostRanks
+        hostComm = MPI.Comm_split(MPI.COMM_WORLD, 1, 0)
         deviceNumber = shmRank ÷ hostStride
         CUDA.device!(deviceNumber)
-        comm = Comm(Master(deviceNumber), MPI.COMM_WORLD)
+        comm = Comm(Master(deviceNumber, hostComm), MPI.COMM_WORLD)
     else
+        hostComm = MPI.Comm_split(MPI.COMM_WORLD, nothing, 0)
         comm = Comm(Slave(), MPI.COMM_WORLD)
     end
 
@@ -453,31 +457,93 @@ function default_rng(::GPU)
     return CUDA.default_rng()
 end
 
-function init!(chunk, mesh, executor, randSeed=19891)
-    c = chunk
-    set_time!(c, 0.0, 0.0, executor)
+function init!(chunks, mesh, executor, randSeed=19891)
+    for (i, c) in enumerate(chunks)
+        c = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
 
-    rng = default_rng(executor)
-    Random.seed!(rng, randSeed)
-    fill!(c.boundingBox.min, 0.0)
-    fill!(c.boundingBox.max, 0.0)
-    rand!(rng, c.d)
-    rand!(rng, c.X)
-    rand!(rng, c.Y)
-    rand!(rng, c.Z)
-    @. c.d = c.d*5e-3SCL + 5e-3SCL
-    @. c.X = c.X*mesh.L.x + mesh.origin.x
-    @. c.Y = c.Y*mesh.L.y + mesh.origin.y
-    @. c.Z = c.Z*mesh.L.z + mesh.origin.z
-    # Clustered init in a part of the domain
-    # @. c.X = c.X*mesh.Δ.x*mesh.partitionN.x*0.5*randSeed + mesh.origin.x + 0.6*mesh.L.x
-    # @. c.Y = c.Y*mesh.Δ.y*mesh.partitionN.y*0.5*randSeed + mesh.origin.y + 0.6*mesh.L.y
-    # @. c.Z = c.Z*mesh.Δ.z*mesh.partitionN.z*0.5*randSeed + mesh.origin.z + 0.6*mesh.L.z
-    fill!(c.U, 0.0)
-    fill!(c.V, 0.0)
-    fill!(c.W, 0.0)
+        set_time!(c, 0.0, 0.0, executor)
+    
+        rng = default_rng(executor)
+        Random.seed!(rng, randSeed)
+        fill!(c.boundingBox.min, 0.0)
+        fill!(c.boundingBox.max, 0.0)
+        rand!(rng, c.d)
+        rand!(rng, c.X)
+        rand!(rng, c.Y)
+        rand!(rng, c.Z)
+        @. c.d = c.d*5e-3SCL + 5e-3SCL
+        @. c.X = c.X*mesh.L.x + mesh.origin.x
+        @. c.Y = c.Y*mesh.L.y + mesh.origin.y
+        @. c.Z = c.Z*mesh.L.z + mesh.origin.z
+        # Clustered init in a part of the domain
+        # @. c.X = c.X*mesh.Δ.x*mesh.partitionN.x*0.5*randSeed + mesh.origin.x + 0.6*mesh.L.x
+        # @. c.Y = c.Y*mesh.Δ.y*mesh.partitionN.y*0.5*randSeed + mesh.origin.y + 0.6*mesh.L.y
+        # @. c.Z = c.Z*mesh.Δ.z*mesh.partitionN.z*0.5*randSeed + mesh.origin.z + 0.6*mesh.L.z
+        fill!(c.U, 0.0)
+        fill!(c.V, 0.0)
+        fill!(c.W, 0.0)
+    end
+
     return nothing
 end
+
+
+function initWithHilbert!(chunks, mesh, comm, ::GPU, randSeed=19891)
+    nChunksGlobal = size(chunks, 1)
+    startChunk = 1
+    @show MPI.Comm_size(comm.member.hostCommunicator)
+    if(MPI.Comm_size(comm.member.hostCommunicator) > 1)
+        startChunk = MPI.Exscan(nChunksGlobal, sum, comm.member.hostCommunicator)
+        startChunk += 1
+        nChunksGlobal = MPI.Bcast(startChunk + nChunksGlobal, MPI.Comm_size(comm.member.hostCommunicator), comm.member.hostCommunicator)
+        @show startChunk nChunksGlobal
+    end
+
+    nHilbert = 10
+    lHilbert = (2^nHilbert)^3
+
+    for i in eachindex(chunks)
+        chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
+        c = chunks[i]
+
+        set_time!(c, 0.0, 0.0, executor)
+
+        rng = default_rng(executor)
+        Random.seed!(rng, randSeed)
+        fill!(c.boundingBox.min, 0.0)
+        fill!(c.boundingBox.max, 0.0)
+        rand!(rng, c.d)
+        rand!(rng, c.X)
+        rand!(rng, c.Y)
+        rand!(rng, c.Z)
+        @. c.d = c.d*5e-3SCL + 5e-3SCL
+
+        p_CPU = Array{Int}(undef, (c.N, 3))
+        p_GPU = CuArray{Int}(undef, (c.N, 3))
+        
+        hStart = round(Int, (startChunk + (i - 1)*lHilbert)/nChunksGlobal)
+        hEnd = round(Int, (startChunk + i*lHilbert)/nChunksGlobal)
+        for j in 1:c.N
+            p_CPU[j,:] = hilbert(rand(hStart:hEnd), 3, nHilbert)
+        end
+
+        copyto!(p_GPU, p_CPU)
+
+        pv = @view p_GPU[:, 1]
+        @. c.X = mesh.origin.x + mesh.Δ.x*(mesh.N.x * pv ÷ 2^nHilbert + c.X)
+        pv = @view p_GPU[:, 2]
+        @. c.Y = mesh.origin.y + mesh.Δ.y*(mesh.N.y * pv ÷ 2^nHilbert + c.Y)
+        pv = @view p_GPU[:, 3]
+        @. c.Z = mesh.origin.z + mesh.Δ.z*(mesh.N.z * pv ÷ 2^nHilbert + c.Z)
+
+        fill!(c.U, 0.0)
+        fill!(c.V, 0.0)
+        fill!(c.W, 0.0)
+    end
+
+    return nothing
+end
+
 
 function init_random!(field, interval, offset)
     rng = Random.default_rng()
@@ -1378,14 +1444,14 @@ lock(control.locks.eulerianComms[comm.jlRank])
 
 if comm.isHost
     chunks = Vector{Chunk}(undef, nChunks)
-    for i in eachindex(chunks)
-        chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
-        init!(chunks[i], mesh, executor, i)
-    end
+
+    # init!(chunks, mesh, executor)
+    initWithHilbert!(chunks, mesh, comm, executor)
+
     tNow = timing(tNow, "Initialized particle chunk")
 
     # Write initial state
-    # write(chunk, comm, executor)
+    # write(chunks, comm, executor)
     tNow = timing(tNow, "Written VTK data")
 
     # Allocate Eulerian for all ranks on master
