@@ -462,7 +462,7 @@ function init!(chunks, mesh, executor, randSeed=19891)
         c = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
 
         set_time!(c, 0.0, 0.0, executor)
-    
+
         rng = default_rng(executor)
         Random.seed!(rng, randSeed)
         fill!(c.boundingBox.min, 0.0)
@@ -490,12 +490,17 @@ end
 
 function initWithHilbert!(chunks, mesh, comm, ::GPU, randSeed=19891)
     nChunksGlobal = size(chunks, 1)
-    startChunk = 1
+    startChunk = 0
     @show MPI.Comm_size(comm.member.hostCommunicator)
     if(MPI.Comm_size(comm.member.hostCommunicator) > 1)
-        startChunk = MPI.Exscan(nChunksGlobal, sum, comm.member.hostCommunicator)
-        startChunk += 1
-        nChunksGlobal = MPI.Bcast(startChunk + nChunksGlobal, MPI.Comm_size(comm.member.hostCommunicator), comm.member.hostCommunicator)
+        startChunk = MPI.Exscan(
+            nChunksGlobal, sum, comm.member.hostCommunicator
+        )
+        nChunksGlobal = MPI.Bcast(
+            startChunk + nChunksGlobal,
+            MPI.Comm_size(comm.member.hostCommunicator) - 1,
+            comm.member.hostCommunicator
+        )
         @show startChunk nChunksGlobal
     end
 
@@ -520,7 +525,7 @@ function initWithHilbert!(chunks, mesh, comm, ::GPU, randSeed=19891)
 
         p_CPU = Array{Int}(undef, (c.N, 3))
         p_GPU = CuArray{Int}(undef, (c.N, 3))
-        
+
         hStart = round(Int, (startChunk + (i - 1)*lHilbert)/nChunksGlobal)
         hEnd = round(Int, (startChunk + i*lHilbert)/nChunksGlobal)
         for j in 1:c.N
@@ -888,7 +893,7 @@ function init_async_evolve!(
                         fill(Inf, 3), fill(-Inf, 3)
                     )
                     copy!(chunk.boundingBox, hostChunkBb)
-                    bbKernel(chunk, executor)
+                    bbKernel(chunk, executor; threads, blocks)
                     copy!(hostChunkBb, chunk.boundingBox)
                     determine!(
                         comm.member.requiredEulerianRanks,
