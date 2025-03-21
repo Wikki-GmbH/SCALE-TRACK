@@ -822,7 +822,7 @@ function init_async_evolve!(
                         fill(Inf, 3), fill(-Inf, 3)
                     )
                     copy!(chunk.boundingBox, hostChunkBb)
-                    bbKernel(chunk, executor)
+                    bbKernel(chunk, executor; threads, blocks)
                     copy!(hostChunkBb, chunk.boundingBox)
                     determine!(
                         comm.member.requiredEulerianRanks,
