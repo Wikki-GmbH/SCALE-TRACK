@@ -649,10 +649,8 @@ function determine!(requiredEulerianRanks, chunkBoundingBox, mesh, control)
     lock(control.locks.eulerianRequest) do
         union!(
             requiredEulerianRanks,
-            Set{label}(
-                li[minP[1]:maxP[1], minP[2]:maxP[2], minP[3]:maxP[3]]
-                .- 1  # Rank indexing is zero-based
-            )
+            li[minP[1]:maxP[1], minP[2]:maxP[2], minP[3]:maxP[3]]
+            .- 1  # Rank indexing is zero-based
         )
     end
 end
