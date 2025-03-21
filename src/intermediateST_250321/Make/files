@@ -1,0 +1,64 @@
+PARCELS=parcels
+BASEPARCELS=$(PARCELS)/baseClasses
+DERIVEDPARCELS=$(PARCELS)/derived
+
+CLOUDS=clouds
+BASECLOUDS=$(CLOUDS)/baseClasses
+DERIVEDCLOUDS=$(CLOUDS)/derived
+
+
+/* Cloud base classes */
+$(BASECLOUDS)/kinematicCloud/kinematicCloud.C
+$(BASECLOUDS)/cloudCloud/cloudCloud.C
+
+
+/* kinematic parcel sub-models */
+KINEMATICPARCEL=$(DERIVEDPARCELS)/basicKinematicParcel
+$(KINEMATICPARCEL)/defineBasicKinematicParcel.C
+$(KINEMATICPARCEL)/makeBasicKinematicParcelSubmodels.C
+
+
+/* cloud parcel sub-models */
+CLOUDPARCEL=$(DERIVEDPARCELS)/basicCloudParcel
+$(CLOUDPARCEL)/defineBasicCloudParcel.C
+$(CLOUDPARCEL)/makeBasicCloudParcelSubmodels.C
+
+
+/* bolt-on models */
+RADIATION=submodels/addOns/radiation
+$(RADIATION)/absorptionEmission/cloudAbsorptionEmission/cloudAbsorptionEmission.C
+$(RADIATION)/scatter/cloudScatter/cloudScatter.C
+
+submodels/Kinematic/PatchInteractionModel/LocalInteraction/patchInteractionData.C
+submodels/Kinematic/PatchInteractionModel/LocalInteraction/patchInteractionDataList.C
+
+KINEMATICINJECTION=submodels/Kinematic/InjectionModel
+$(KINEMATICINJECTION)/KinematicLookupTableInjection/kinematicParcelInjectionData.C
+$(KINEMATICINJECTION)/KinematicLookupTableInjection/kinematicParcelInjectionDataIO.C
+$(KINEMATICINJECTION)/KinematicLookupTableInjection/kinematicParcelInjectionDataIOList.C
+$(KINEMATICINJECTION)/PatchInjection/patchInjectionBase.C
+
+
+/* integration schemes */
+integrationScheme/integrationScheme/integrationScheme.C
+integrationScheme/integrationScheme/integrationSchemeNew.C
+integrationScheme/Euler/Euler.C
+integrationScheme/analytical/analytical.C
+
+
+/* phase properties */
+phaseProperties/phaseProperties/phaseProperties.C
+phaseProperties/phaseProperties/phasePropertiesIO.C
+phaseProperties/phasePropertiesList/phasePropertiesList.C
+
+
+/* additional helper classes */
+clouds/Templates/KinematicCloud/cloudSolution/cloudSolution.C
+submodels/CloudFunctionObjects/CloudFunctionObject/cloudFunctionObjectTools.C
+
+/* conversion methods */
+conversion/ensight/ensightOutputCloud.C
+conversion/vtk/foamVtkLagrangianWriter.C
+
+
+LIB = $(FOAM_USER_LIBBIN)/liblagrangianIntermediateST_250321
