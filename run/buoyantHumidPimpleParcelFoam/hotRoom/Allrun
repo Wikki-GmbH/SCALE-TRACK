@@ -1,0 +1,19 @@
+#!/bin/sh
+cd "${0%/*}" || exit                                # Run from this directory
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+
+restore0Dir
+runApplication blockMesh
+runApplication topoSet
+runApplication decomposePar
+runParallel buoyantHumidPimpleParcelFoam_250321
+
+# Carrier temperature and vapour density, and the vapour mass of the room
+grep "T min" log.buoyantHumidPimpleParcelFoam_250321 | sed -n '0~5p' >minmaxT_OF.csv
+
+grep "rhoV min" log.buoyantHumidPimpleParcelFoam_250321 | sed -n '0~5p' >minmaxrhoV_OF.csv
+
+grep 'H2O mass' log.buoyantHumidPimpleParcelFoam_250321 | sed -n '0~3p' >integralrhoV_OF.csv
+
+#------------------------------------------------------------------------------
