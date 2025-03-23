@@ -1,0 +1,5 @@
+juliaHelper.c
+buoyantHumidPimpleJuliaParcelFoam.C
+juliaWrapper.C
+
+EXE = $(FOAM_USER_APPBIN)/buoyantHumidPimpleJuliaParcelFoam_250321
