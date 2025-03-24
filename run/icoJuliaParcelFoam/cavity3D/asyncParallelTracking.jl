@@ -326,7 +326,8 @@ struct Master <: CommMember
     hostCommunicator::MPI.Comm
 end
 
-Master(deviceNumber, hostCommunicator) = Master(deviceNumber, Set{label}(), Vector{label}(), hostCommunicator)
+Master(deviceNumber, hostCommunicator) =
+    Master(deviceNumber, Set{label}(), Vector{label}(), hostCommunicator)
 
 struct Slave <: CommMember
     inquiringEulerianRanks::Vector{label}
@@ -422,8 +423,10 @@ function allocate_chunk(::GPU, constructorArgs...)
     return Chunk{CuVector{scalar}, CuVector{Time}}(constructorArgs...)
 end
 
-function allocate_chunk(::Comm{Master}, executor, constructorArgs...)
-    return allocate_chunk(executor, constructorArgs...)
+function allocate!(chunks, ::Comm{Master}, executor, constructorArgs...)
+    for i in eachindex(chunks)
+        chunks[i] = allocate_chunk(executor, constructorArgs...)
+    end
 end
 
 function set_time!(chunk, t, Δt, ::CPU)
@@ -458,9 +461,9 @@ function default_rng(::GPU)
 end
 
 function init!(chunks, mesh, executor, randSeed=19891)
-    for (i, c) in enumerate(chunks)
-        c = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
-
+    for i in eachindex(chunks)
+        chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
+        c = chunks[i]
         set_time!(c, 0.0, 0.0, executor)
 
         rng = default_rng(executor)
@@ -487,18 +490,31 @@ function init!(chunks, mesh, executor, randSeed=19891)
     return nothing
 end
 
+const bitmask_t = HilbertSpaceFillingCurve.bitmask_t
+
+function hilbert!(px, py, pz, j, p, d::T, ndims, nbits = 32) where T <: Integer
+    @assert ndims*nbits <= sizeof(bitmask_t) * HilbertSpaceFillingCurve.bits_per_byte
+
+    ccall(
+        (:hilbert_i2c, HilbertSpaceFillingCurve.libhilbert), Nothing,
+        (Int, Int, bitmask_t, Ptr{bitmask_t}), ndims, nbits, d, p
+    )
+    px[j] = p[1]
+    py[j] = p[2]
+    pz[j] = p[3]
+    return nothing
+end
 
 function initWithHilbert!(chunks, mesh, comm, ::GPU, randSeed=19891)
-    nChunksGlobal = size(chunks, 1)
+    nChunksGlobal = length(chunks)
     startChunk = 0
-    @show MPI.Comm_size(comm.member.hostCommunicator)
-    if(MPI.Comm_size(comm.member.hostCommunicator) > 1)
-        startChunk = MPI.Exscan(
-            nChunksGlobal, sum, comm.member.hostCommunicator
-        )
+    hostCommSize = MPI.Comm_size(comm.member.hostCommunicator)
+    @show hostCommSize
+    if(hostCommSize > 1)
+        startChunk = MPI.Exscan(nChunksGlobal, +, comm.member.hostCommunicator)
         nChunksGlobal = MPI.Bcast(
             startChunk + nChunksGlobal,
-            MPI.Comm_size(comm.member.hostCommunicator) - 1,
+            hostCommSize - 1,
             comm.member.hostCommunicator
         )
         @show startChunk nChunksGlobal
@@ -507,8 +523,14 @@ function initWithHilbert!(chunks, mesh, comm, ::GPU, randSeed=19891)
     nHilbert = 10
     lHilbert = (2^nHilbert)^3
 
+    p_CPU_x = Array{Int}(undef, nParticles)
+    p_CPU_y = Array{Int}(undef, nParticles)
+    p_CPU_z = Array{Int}(undef, nParticles)
+    p_GPU_x = CuArray{Int}(undef, nParticles)
+    p_GPU_y = CuArray{Int}(undef, nParticles)
+    p_GPU_z = CuArray{Int}(undef, nParticles)
+
     for i in eachindex(chunks)
-        chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
         c = chunks[i]
 
         set_time!(c, 0.0, 0.0, executor)
@@ -517,29 +539,42 @@ function initWithHilbert!(chunks, mesh, comm, ::GPU, randSeed=19891)
         Random.seed!(rng, randSeed)
         fill!(c.boundingBox.min, 0.0)
         fill!(c.boundingBox.max, 0.0)
+        # rand! produces a random number within range [0, 1)
         rand!(rng, c.d)
         rand!(rng, c.X)
         rand!(rng, c.Y)
         rand!(rng, c.Z)
         @. c.d = c.d*5e-3SCL + 5e-3SCL
 
-        p_CPU = Array{Int}(undef, (c.N, 3))
-        p_GPU = CuArray{Int}(undef, (c.N, 3))
 
         hStart = round(Int, (startChunk + (i - 1)*lHilbert)/nChunksGlobal)
         hEnd = round(Int, (startChunk + i*lHilbert)/nChunksGlobal)
-        for j in 1:c.N
-            p_CPU[j,:] = hilbert(rand(hStart:hEnd), 3, nHilbert)
+        # The parent function is not type stable.  Put the busy loop into a
+        # function to prevent allocations.
+        function run_hilbert()
+            p = HilbertSpaceFillingCurve.bitmask_t.(zeros(3))
+            for j in 1:c.N
+                hilbert!(
+                    p_CPU_x, p_CPU_y, p_CPU_z, j, p, rand(hStart:hEnd), 3,
+                    nHilbert
+                )
+            end
         end
+        run_hilbert()
 
-        copyto!(p_GPU, p_CPU)
+        copyto!(p_GPU_x, p_CPU_x)
+        copyto!(p_GPU_y, p_CPU_y)
+        copyto!(p_GPU_z, p_CPU_z)
 
-        pv = @view p_GPU[:, 1]
-        @. c.X = mesh.origin.x + mesh.Δ.x*(mesh.N.x * pv ÷ 2^nHilbert + c.X)
-        pv = @view p_GPU[:, 2]
-        @. c.Y = mesh.origin.y + mesh.Δ.y*(mesh.N.y * pv ÷ 2^nHilbert + c.Y)
-        pv = @view p_GPU[:, 3]
-        @. c.Z = mesh.origin.z + mesh.Δ.z*(mesh.N.z * pv ÷ 2^nHilbert + c.Z)
+        @. c.X = (
+            mesh.origin.x + mesh.Δ.x*((mesh.N.x*p_GPU_x)÷2^nHilbert + c.X)
+        )*0.99999SCL  # prevent position at a domain boundary
+        @. c.Y = (
+            mesh.origin.y + mesh.Δ.y*((mesh.N.y*p_GPU_y)÷2^nHilbert + c.Y)
+        )*0.99999SCL
+        @. c.Z = (
+            mesh.origin.z + mesh.Δ.z*((mesh.N.z*p_GPU_z)÷2^nHilbert + c.Z)
+        )*0.99999SCL
 
         fill!(c.U, 0.0)
         fill!(c.V, 0.0)
@@ -1449,18 +1484,22 @@ if comm.isHost
     chunks = Vector{Chunk}(undef, nChunks)
 
     # init!(chunks, mesh, executor)
+    allocate!(chunks, comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
     initWithHilbert!(chunks, mesh, comm, executor)
 
     tNow = timing(tNow, "Initialized particle chunk")
 
     # Write initial state
     # write(chunks, comm, executor)
-    tNow = timing(tNow, "Written VTK data")
+    # tNow = timing(tNow, "Written VTK data")
 
     # Allocate Eulerian for all ranks on master
     for i in eachindex(reg["eulerian"])
         reg["eulerian"][i] = TwoWayEulerian{VectorField}(prod(mesh.partitionN))
     end
+
+    # Synchronize before starting the evolve thread
+    MPI.Barrier(comm.communicator)
 
     errormonitor(
         @spawn init_async_evolve!(
@@ -1473,6 +1512,9 @@ else
     reg["eulerian"][comm.jlRank] = TwoWayEulerian{VectorField}(
         prod(mesh.partitionN)
     )
+
+    # Synchronize before starting the evolve thread
+    MPI.Barrier(comm.communicator)
 
     errormonitor(
         @spawn init_async_evolve!(reg["eulerian"], control, comm, executor)
