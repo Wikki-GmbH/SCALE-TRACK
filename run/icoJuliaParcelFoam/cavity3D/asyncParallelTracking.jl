@@ -64,6 +64,10 @@ function timing(t, s)
     return time()
 end
 
+function fmt_time(t)
+    return round(t, sigdigits=4)
+end
+
 # Macro for printing debug statements.  Enable by setting global DebugComm to
 # true.  If disabled, all debug printing is turned off with zero overhead.
 macro debugCommPrintln(ex)
@@ -324,10 +328,14 @@ struct Master <: CommMember
     requiredEulerianRanks::Set{label}
     inquiringEulerianRanks::Vector{label}
     hostCommunicator::MPI.Comm
+    hostCommSize::label
 end
 
 Master(deviceNumber, hostCommunicator) =
-    Master(deviceNumber, Set{label}(), Vector{label}(), hostCommunicator)
+    Master(
+        deviceNumber, Set{label}(), Vector{label}(), hostCommunicator,
+        MPI.Comm_size(hostCommunicator)
+    )
 
 struct Slave <: CommMember
     inquiringEulerianRanks::Vector{label}
@@ -462,7 +470,7 @@ end
 
 function init!(chunks, mesh, executor, randSeed=19891)
     for i in eachindex(chunks)
-        chunks[i] = allocate_chunk(comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
+        chunks[i] = allocate_chunk(comm, executor, nParticlesPerChunk, μᶜ, ρᵈ, ρᵈ/ρᶜ)
         c = chunks[i]
         set_time!(c, 0.0, 0.0, executor)
 
@@ -505,7 +513,9 @@ function hilbert!(px, py, pz, j, p, d::T, ndims, nbits = 32) where T <: Integer
     return nothing
 end
 
-function initWithHilbert!(chunks, mesh, comm, ::GPU, randSeed=19891)
+function initWithHilbert!(
+    chunks, mesh, comm, nParticlesPerChunk, ::GPU, randSeed=19891
+)
     nChunksGlobal = length(chunks)
     startChunk = 0
     hostCommSize = MPI.Comm_size(comm.member.hostCommunicator)
@@ -523,12 +533,12 @@ function initWithHilbert!(chunks, mesh, comm, ::GPU, randSeed=19891)
     nHilbert = 10
     lHilbert = (2^nHilbert)^3
 
-    p_CPU_x = Array{Int}(undef, nParticles)
-    p_CPU_y = Array{Int}(undef, nParticles)
-    p_CPU_z = Array{Int}(undef, nParticles)
-    p_GPU_x = CuArray{Int}(undef, nParticles)
-    p_GPU_y = CuArray{Int}(undef, nParticles)
-    p_GPU_z = CuArray{Int}(undef, nParticles)
+    p_CPU_x = Array{Int}(undef, nParticlesPerChunk)
+    p_CPU_y = Array{Int}(undef, nParticlesPerChunk)
+    p_CPU_z = Array{Int}(undef, nParticlesPerChunk)
+    p_GPU_x = CuArray{Int}(undef, nParticlesPerChunk)
+    p_GPU_y = CuArray{Int}(undef, nParticlesPerChunk)
+    p_GPU_z = CuArray{Int}(undef, nParticlesPerChunk)
 
     for i in eachindex(chunks)
         c = chunks[i]
@@ -1030,7 +1040,7 @@ function init_async_evolve!(
         GC.enable(true)
         notify(control.events.U_copied)
 
-        print("Evolve particles\n")
+        tDeviceCompute = time()
 
         for l in control.locks.eulerianComms
             lock(l)
@@ -1067,10 +1077,13 @@ function init_async_evolve!(
             unlock(l)
         end
 
+        tDeviceCompute = time() - tDeviceCompute
         tEvolve = time() - tStart
         global totalTime += tEvolve
-        print("Lagrangian solver: waiting time for evolve to finish = \
-            $(round(tEvolve, sigdigits=4)) s; total waiting time = \
+        print("Lagrangian solver: device compute time = \
+            $(round(tDeviceCompute, sigdigits=4)) s; \
+            evolve time incl. communication = \
+            $(round(tEvolve, sigdigits=4)) s; total evolve time = \
             $(round(totalTime, sigdigits=4)) s\n"
         )
 
@@ -1380,6 +1393,17 @@ function evolve_cloud(Δt)
     # threads.  The error occurs when the garbage collector (GC) is triggered
     # in more than one thread at the same time.  Thus, trigger GC manually and
     # then disable it in the affected functions.
+    dtTimeStep = time() - tTimeStep
+    global tTimeStep = time()
+    global tTotalNoInit += dtTimeStep
+    # Exclude first time step as well
+    if nTimeSteps == 1 tTotalNoInit = 0 end
+    global nTimeSteps += 1
+    timing(tEulerTimeStep, "Computed Eulerian phase")
+    print("Time step wall clock time = $(fmt_time(dtTimeStep)) s\n")
+    print("Total wall clock time excl. initialization = \
+        $(fmt_time(tTotalNoInit)) s\n"
+    )
     global reg
     GC.enable(true)
     reg["timestepsSinceLastGC"] += 1
@@ -1406,6 +1430,7 @@ function evolve_cloud(Δt)
 
     # Enable GC
     GC.enable(true)
+    global tEulerTimeStep = time()
     return nothing
 end
 
@@ -1427,32 +1452,12 @@ tNow = timing(ΔtInitMethods, "Initialized communication")
 
 println("Julia active project: ", Base.active_project())
 
-nParticles = 800_000_000  # RTX3090
-# nParticles = 25_000_000  # RTX3090 fast
-# nParticles = 1_000_000  # RTX3090 faster
-# nParticles = 2  # GT710
-nParticles = 100_000  # GT710
-
-nChunks = 10
-# nChunks = 1
-
-μᶜ = 1e-3
-ρᶜ = 1e3
-ρᵈ = 1.0
-# These properties lead to large velocity source terms
-# μᶜ = 1e3
-# ρᵈ = 1e8
-nCellsPerDirection = 40
-nCells = nCellsPerDirection^3
-origin = 0.0
-ending = 1.0
+# Load case setup
+include("setup.jl")
 
 if comm.size == 1
     # Serial run
     decomposition = (1, 1, 1)
-else
-    # Decomposition coefficients need to be the same as in the decomposeParDict
-    decomposition = (2, 2, 5)
 end
 
 reg["noGcTimestepInterval"] = 100
@@ -1481,13 +1486,23 @@ firstPass = true
 lock(control.locks.eulerianComms[comm.jlRank])
 
 if comm.isHost
-    chunks = Vector{Chunk}(undef, nChunks)
+    nParticlesPerChunk, remainder =
+        divrem(nParticles, comm.member.hostCommSize*nChunksPerDevice)
+    if remainder != 0
+        println(
+            "Total number of particles cannot be evenly split into chunks.",
+            " Thus, nParticlesPerChunk = ", nParticlesPerChunk,
+            " resulting in nParticles = ", nParticles
+        )
+    end
+    @show nParticlesPerChunk
 
-    # init!(chunks, mesh, executor)
-    allocate!(chunks, comm, executor, nParticles, μᶜ, ρᵈ, ρᵈ/ρᶜ)
-    initWithHilbert!(chunks, mesh, comm, executor)
+    chunks = Vector{Chunk}(undef, nChunksPerDevice)
+    # init!(chunks, mesh, nParticlesPerChunk, executor)
+    allocate!(chunks, comm, executor, nParticlesPerChunk, μᶜ, ρᵈ, ρᵈ/ρᶜ)
+    initWithHilbert!(chunks, mesh, comm, nParticlesPerChunk, executor)
 
-    tNow = timing(tNow, "Initialized particle chunk")
+    tNow = timing(tNow, "Initialized particle chunks")
 
     # Write initial state
     # write(chunks, comm, executor)
@@ -1532,6 +1547,12 @@ if isinteractive()
     evolve_cloud(1e-3)
     evolve_cloud(1e-3)
 end
+
+# Global timers
+tTimeStep = time()
+tEulerTimeStep = time()
+tTotalNoInit = 0
+nTimeSteps = 0
 
 gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
 reg["gc_num"] = Base.gc_num()
