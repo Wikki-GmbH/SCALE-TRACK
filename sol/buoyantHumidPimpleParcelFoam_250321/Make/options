@@ -20,7 +20,7 @@ EXE_INC = \
     -I$(LIB_SRC)/regionFaModels/lnInclude \
     -I$(LIB_SRC)/faOptions/lnInclude \
     -I$(LIB_SRC)/lagrangian/basic/lnInclude \
-    -I$(FOAM_RUN)/../src/lagrangian/intermediateST_250321/lnInclude \
+    -I../../src/intermediateST_250321/lnInclude \
     -DFULLDEBUG -g -O0
 
 EXE_LIBS = \
