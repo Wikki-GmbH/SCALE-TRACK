@@ -55,12 +55,42 @@ DebugComm = false
 # Auxiliary Methods
 
 function timing(t, s)
-    dt = round(time() - t, sigdigits=4)
-    println(s, " in ", dt, " s")
+    timePoint = time()
+    dt = timePoint - t
+    print("$s in $(fmt_time(dt)) s\n")
 
     # Invoke flush to ensure immediate printing even when executed within C code
     flush(stdout)
-    return time()
+    return timePoint
+end
+
+function fmt_time(t)
+    return round(t, sigdigits=4)
+end
+
+function save_timings(comm, reg)
+    open("stats_np$(comm.size)","w") do io
+        println(io, "\
+            tAllTotal tAllMean tAllStd \
+            tEulerTotal tEulerMean tEulerStd \
+            tEvolveTotal tEvolveMean tEvolveStd \
+            tDeviceComputeTotal\
+        ")
+        timings = scalar[
+            reg["tAllTotal"],
+            mean(reg["dtVecAll"]), std(reg["dtVecAll"]),
+            reg["tEulerTotal"],
+            mean(reg["dtVecEuler"]), std(reg["dtVecEuler"]),
+            reg["tEvolveTotal"],
+            mean(reg["dtVecEvolve"]), std(reg["dtVecEvolve"]),
+            reg["tDeviceComputeTotal"]
+        ]
+        for t in timings
+            print(io, "$(fmt_time(t)) ")
+        end
+        print(io, "\n")
+    end
+    return nothing
 end
 
 # Macro for printing debug statements.  Enable by setting global DebugComm to
@@ -735,14 +765,14 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
             evolve_particle!(chunk, eulerian, i, ΔtP, mesh, nSteps, executor)
         end
 
-        tEvolve = time() - tStart
-        if !firstPass
-            global totalTime += tEvolve
+        tEvolve = time() - ["tEvolveStart"]
+        if reg["iTimeStep"] > 1
+            reg["tEvolveTotal"] += tEvolve
+            push!(reg["dtVecEvolve"], tEvolve)
         end
-        global firstPass = false
-        println("Lagrangian solver timings: current evolve = ",
-            round(tEvolve, sigdigits=4), " s; total time = ",
-            round(totalTime, sigdigits=4), " s"
+        print("Lagrangian solver timings: current evolve = \
+            $(fmt_time(tEvolve)), s; total time = \
+            $(fmt_time(reg["tEvolveTotal"])) s\n"
         )
     end
     return nothing
@@ -1092,7 +1122,7 @@ function init_async_evolve!(
         GC.enable(true)
         notify(control.events.U_copied)
 
-        print("Evolve particles\n")
+        tDeviceCompute = time()
 
         for l in control.locks.eulerianComms
             lock(l)
@@ -1127,14 +1157,23 @@ function init_async_evolve!(
             unlock(l)
         end
 
-        tEvolve = time() - tStart
-        global totalTime += tEvolve
-        print("Lagrangian solver: waiting time for evolve to finish = \
-            $(round(tEvolve, sigdigits=4)) s; total waiting time = \
-            $(round(totalTime, sigdigits=4)) s\n"
+        dtDeviceCompute = time() - tDeviceCompute
+        tEvolve = time() - reg["tEvolveStart"]
+        if reg["iTimeStep"] > 1
+            reg["tEvolveTotal"] += tEvolve
+            push!(reg["dtVecEvolve"], tEvolve)
+            reg["tDeviceComputeTotal"] += dtDeviceCompute
+        end
+        print("Lagrangian solver: device compute time = \
+            $(fmt_time(dtDeviceCompute)) s; \
+            evolve time incl. communication = \
+            $(fmt_time(tEvolve)) s; total evolve time = \
+            $(fmt_time(reg["tEvolveTotal"])) s\n"
         )
 
         wait(control.events.Eulerian_computed)
+
+        reg["tEvolveStart"] = time()
         GC.enable(false)
 
         # Correct and estimate the source
@@ -1244,11 +1283,10 @@ end
 # Drives evolve on GPU
 function evolve!(control, ::GPU)
     unlock(control.locks.eulerianComms[comm.jlRank])
-    if !firstPass
+    if reg["iTimeStep"] > 1
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
     end
-    global firstPass = false
     wait(control.events.U_copied)
     lock(control.locks.eulerianComms[comm.jlRank])
     return nothing
@@ -1641,7 +1679,29 @@ function evolve_cloud(Δt)
     # threads.  The error occurs when the garbage collector (GC) is triggered
     # in more than one thread at the same time.  Thus, trigger GC manually and
     # then disable it in the affected functions.
-    global reg
+    global reg, comm
+
+    # Timings
+    reg["iTimeStep"] += 1
+    dtVec = time() - reg["tAllStart"]
+    dtEuler = time() - reg["tEulerStart"]
+    reg["tAllStart"] = time()
+    # Exclude first time step
+    timing(reg["tEulerStart"], "Computed Eulerian phase")
+    if reg["iTimeStep"] > 2
+        reg["tAllTotal"] += dtVec
+        reg["tEulerTotal"] += dtEuler
+        push!(reg["dtVecAll"], dtVec)
+        push!(reg["dtVecEuler"], dtEuler)
+    end
+    if  comm.isMaster && reg["iTimeStep"] == reg["nTimeStepsWriteTimings"]
+        save_timings(comm, reg)
+    end
+    print("Time step wall clock time = $(fmt_time(dtVec)) s\n")
+    print("Total wall clock time excl. initialization = \
+        $(fmt_time(reg["tAllTotal"])) s\n"
+    )
+
     GC.enable(true)
     reg["timestepsSinceLastGC"] += 1
     if reg["timestepsSinceLastGC"] >= reg["noGcTimestepInterval"]
@@ -1662,7 +1722,6 @@ function evolve_cloud(Δt)
         end
     end
 
-    global tStart = time()
     evolve!(control, executor)
 
     minrhoVTrans = minimum(reg["eulerian"][comm.jlRank].rhoVTrans)
@@ -1671,6 +1730,7 @@ function evolve_cloud(Δt)
 
     # Enable GC
     GC.enable(true)
+    reg["tEulerStart"] = time()
     return nothing
 end
 
@@ -1692,42 +1752,20 @@ tNow = timing(ΔtInitMethods, "Initialized communication")
 
 println("Julia active project: ", Base.active_project())
 
-nParticles = 50_000_000
-nChunks = 1
-nPTotal = nChunks*nParticles
-
-# constants in SI units
-# @SiSc: added additional properties
-μᶜ = 1.8e-5SCL              # continuous phase dynamic viscosity
-ρᶜ = 1.2SCL                 # continuous phase density
-ρᵈ = 1000.0SCL              # disperse phase density
-g = ScalarVec(0, 0, 0)      # gravitational acceleration
-Cₚᶜ = 1000SCL               # specific heat capacity of air
-Cₚᵈ = 4200SCL               # specific heat capacity of water
-Dᵈᶜ = 24.5e-6SCL            # diffusivity coefficient of water vapour in air
-Mᵈ = 18.01528e-3SCL         # molar mass of water
-σᶜ = 72.8e-3SCL             # surface tension of water in air
-RG = 8.3144598SCL           # gas constant
-SLH = 2264.71SCL            # specific latent heat of water vaporisation
-
-nCellsPerDirection = [32, 32, 32]
-nCells = prod(nCellsPerDirection)
-origin = [0.0, 0.0, 0.0]
-ending = [1.0, 1.0, 1.0]
+# Load case setup
+include("setup.jl")
 
 if comm.size == 1
     # Serial run
     decomposition = (1, 1, 1)
-else
-    # Decomposition coefficients need to be the same as in the decomposeParDict
-    decomposition = (4, 4, 2)
 end
 
 reg["noGcTimestepInterval"] = 100
 reg["timestepsSinceLastGC"] = 100
 
 # @SiSc: added some additional output
-@show nParticles nChunks nPTotal nCellsPerDirection nCells origin ending decomposition
+@show nParticles nChunksPerDevice nCellsPerDirection nCells
+@show origin ending decomposition
 @show μᶜ ρᶜ ρᵈ g Cₚᶜ Cₚᵈ Dᵈᶜ Mᵈ σᶜ RG SLH
 @show reg["noGcTimestepInterval"]
 
@@ -1747,16 +1785,41 @@ reg["eulerian"] = Vector{TwoWayEulerian{VectorField, ScalarField}}(
 )
 tNow = timing(tNow, "Allocated Eulerian ranks array")
 
-tStart = time()
-totalTime = 0.0
-firstPass = true
+# Global timers
+reg["iTimeStep"] = 0
+
+reg["tAllStart"] = time()
+reg["tAllTotal"] = 0.0
+reg["dtVecAll"] = scalar[]
+
+reg["tEulerStart"] = time()
+reg["tEulerTotal"] = 0.0
+reg["dtVecEuler"] = scalar[]
+
+reg["tEvolveStart"] = time()
+reg["tEvolveTotal"] = 0.0
+reg["dtVecEvolve"] = scalar[]
+
+reg["tDeviceComputeTotal"] = 0.0
 
 # Lock own Eulerian to put async evolve on wait until it's notified by call to
 # evolve_cloud from OF
 lock(control.locks.eulerianComms[comm.jlRank])
 
 if comm.isHost
-    chunks = Vector{Chunk}(undef, nChunks)
+    nParticlesPerChunk, remainder =
+        divrem(nParticles, comm.member.hostCommSize*nChunksPerDevice)
+    nParticles = nParticlesPerChunk*nChunksPerDevice*comm.member.hostCommSize
+    if remainder != 0
+        println(
+            "Total number of particles cannot be evenly split into chunks.",
+            " Thus, nParticlesPerChunk = ", nParticlesPerChunk,
+            " resulting in nParticles = ", nParticles
+        )
+    end
+    @show nParticlesPerChunk
+
+    chunks = Vector{Chunk}(undef, nChunksPerDevice)
     for i in eachindex(chunks)
         chunks[i] = allocate_chunk(
             comm, executor, nParticles,
@@ -1767,8 +1830,8 @@ if comm.isHost
     tNow = timing(tNow, "Initialized particle chunk")
 
     # Write initial state
-    # write(chunk, comm, executor)
-    tNow = timing(tNow, "Written VTK data")
+    # write(chunks, comm, executor)
+    # tNow = timing(tNow, "Written VTK data")
 
     # Allocate Eulerian for all ranks on master
     for i in eachindex(reg["eulerian"])
@@ -1776,6 +1839,9 @@ if comm.isHost
             prod(mesh.partitionN)
         ) # @SiSc: added ScalarField
     end
+
+    # Synchronize before starting the evolve thread
+    MPI.Barrier(comm.communicator)
 
     errormonitor(
         @spawn init_async_evolve!(
@@ -1788,6 +1854,9 @@ else
     reg["eulerian"][comm.jlRank] = TwoWayEulerian{VectorField, ScalarField}(
         prod(mesh.partitionN)
     ) # SiSc: added ScalarField
+
+    # Synchronize before starting the evolve thread
+    MPI.Barrier(comm.communicator)
 
     errormonitor(
         @spawn init_async_evolve!(reg["eulerian"], control, comm, executor)
