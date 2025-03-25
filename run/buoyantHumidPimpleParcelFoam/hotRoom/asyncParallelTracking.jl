@@ -367,9 +367,15 @@ struct Master <: CommMember
     deviceNumber::label
     requiredEulerianRanks::Set{label}
     inquiringEulerianRanks::Vector{label}
+    hostCommunicator::MPI.Comm
+    hostCommSize::label
 end
 
-Master(deviceNumber) = Master(deviceNumber, Set{label}(), Vector{label}())
+Master(deviceNumber, hostCommunicator) =
+    Master(
+        deviceNumber, Set{label}(), Vector{label}(), hostCommunicator,
+        MPI.Comm_size(hostCommunicator)
+    )
 
 struct Slave <: CommMember
     inquiringEulerianRanks::Vector{label}
@@ -427,7 +433,7 @@ function initComm(executor)
     nDevicesPerNode = count_devices_per_node(executor)
     shmComm = MPI.Comm_split_type(MPI.COMM_WORLD, MPI.COMM_TYPE_SHARED, 0)
     shmRank = MPI.Comm_rank(shmComm)
-    nRanksPerNode = MPI.Allreduce(shmRank, max, shmComm) + 1
+    nRanksPerNode = MPI.Comm_size(shmComm)
     hostStride = nRanksPerNode ÷ nDevicesPerNode
     # Prevent 0 stride
     hostStride = hostStride < 1 ? 1 : hostStride
@@ -436,10 +442,12 @@ function initComm(executor)
     hostRanks =
         range(0, step=hostStride, length=min(nRanksPerNode, nDevicesPerNode))
     if shmRank in hostRanks
+        hostComm = MPI.Comm_split(MPI.COMM_WORLD, 1, 0)
         deviceNumber = shmRank ÷ hostStride
         CUDA.device!(deviceNumber)
-        comm = Comm(Master(deviceNumber), MPI.COMM_WORLD)
+        comm = Comm(Master(deviceNumber, hostComm), MPI.COMM_WORLD)
     else
+        hostComm = MPI.Comm_split(MPI.COMM_WORLD, nothing, 0)
         comm = Comm(Slave(), MPI.COMM_WORLD)
     end
 
