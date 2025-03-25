@@ -609,22 +609,14 @@ end
             scalar_ptr = pointer(
                 reinterpret(scalar, eulerian.UTrans), (posI-1LBL)*3LBL+i
             )
-            CUDA.atomic_add!(
-                scalar_ptr, (dUTrans[i])
-            )
+            GC.@preserve CUDA.atomic_add!(scalar_ptr, dUTrans[i])
         end
 
         # thermal energy transfer
-        scalar_ptr = pointer(
-            reinterpret(scalar, eulerian.hTrans), posI
-        )
-        CUDA.atomic_add!(scalar_ptr, (dhTrans))
+        CUDA.@atomic eulerian.hTrans[posI] += dhTrans
 
         # mass transfer
-        scalar_ptr = pointer(
-            reinterpret(scalar, eulerian.rhoVTrans), posI
-        )
-        CUDA.atomic_add!(scalar_ptr, (drhoVTrans))
+        CUDA.@atomic eulerian.rhoVTrans[posI] += drhoVTrans
     end
     return nothing
 end
