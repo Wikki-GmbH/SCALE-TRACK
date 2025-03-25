@@ -1712,7 +1712,7 @@ if comm.size == 1
     decomposition = (1, 1, 1)
 else
     # Decomposition coefficients need to be the same as in the decomposeParDict
-    decomposition = (2, 1, 1)
+    decomposition = (4, 4, 2)
 end
 
 reg["noGcTimestepInterval"] = 100
