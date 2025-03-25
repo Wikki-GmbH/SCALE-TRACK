@@ -94,17 +94,19 @@ int main(int argc, char *argv[])
             }
         }
     }
-
     Info<< "Initialising Julia" << endl;
     int jl_argc = 2;
+    // int jl_argc = 3;
+    string threadsOpt = "--threads=2";
+    // string debugOpt = "--debug-info=2";
     char** jl_argv = static_cast<char**>(malloc(sizeof(char*)*jl_argc));
     jl_argv[0] = argv[0];
-    string threadsOpt = "--threads=2";
     jl_argv[1] = const_cast<char*>(threadsOpt.c_str());
+    // jl_argv[2] = const_cast<char*>(debugOpt.c_str());
     jl_parse_opts(&jl_argc, &jl_argv);
     jl_init();
     Info<< "Initialising Julia - done" << endl;
-    
+
     argList::addNote
     (
         "Transient solver for buoyant, turbulent fluid flow"
@@ -191,7 +193,7 @@ int main(int argc, char *argv[])
             << "    energy [J]:        "
             << fvc::domainIntegrate(hTrans/mesh.V()) << nl
             << "    H2O mass [kg]:     "
-            << fvc::domainIntegrate(rhoVTrans) << endl;        
+            << fvc::domainIntegrate(rhoVTrans) << endl;
 
         dimensionedVector integralMomentum = fvc::domainIntegrate(rho*U);
         dimensionedScalar integralEnergy = fvc::domainIntegrate
