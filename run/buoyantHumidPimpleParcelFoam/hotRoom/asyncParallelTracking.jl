@@ -881,9 +881,11 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
                 eulerian[comm.jlRank].UTrans .+= sourceBuffersU[i]
             end
             for (i, req) in enumerate(sourceRreqsT)
+                comm_wait(req)
                 eulerian[comm.jlRank].hTrans .+= sourceBuffersT[i]
             end
             for (i, req) in enumerate(sourceRreqsrhoV)
+                comm_wait(req)
                 eulerian[comm.jlRank].rhoVTrans .+= sourceBuffersrhoV[i]
             end
         end
