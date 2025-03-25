@@ -56,16 +56,42 @@ DebugComm = false
 # Auxiliary Methods
 
 function timing(t, s)
-    dt = round(time() - t, sigdigits=4)
-    println(s, " in ", dt, " s")
+    timePoint = time()
+    dt = timePoint - t
+    print("$s in $(fmt_time(dt)) s\n")
 
     # Invoke flush to ensure immediate printing even when executed within C code
     flush(stdout)
-    return time()
+    return timePoint
 end
 
 function fmt_time(t)
     return round(t, sigdigits=4)
+end
+
+function save_timings(comm, reg)
+    open("stats_np$(comm.size)","w") do io
+        println(io, "\
+            tAllTotal tAllMean tAllStd \
+            tEulerTotal tEulerMean tEulerStd \
+            tEvolveTotal tEvolveMean tEvolveStd \
+            tDeviceComputeTotal\
+        ")
+        timings = scalar[
+            reg["tAllTotal"],
+            mean(reg["dtVecAll"]), std(reg["dtVecAll"]),
+            reg["tEulerTotal"],
+            mean(reg["dtVecEuler"]), std(reg["dtVecEuler"]),
+            reg["tEvolveTotal"],
+            mean(reg["dtVecEvolve"]), std(reg["dtVecEvolve"]),
+            reg["tDeviceComputeTotal"]
+        ]
+        for t in timings
+            print(io, "$(fmt_time(t)) ")
+        end
+        print(io, "\n")
+    end
+    return nothing
 end
 
 # Macro for printing debug statements.  Enable by setting global DebugComm to
@@ -780,14 +806,14 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
             evolve_particle!(chunk, eulerian, i, ΔtP, mesh, nSteps, executor)
         end
 
-        tEvolve = time() - tStart
-        if !firstPass
-            global totalTime += tEvolve
+        tEvolve = time() - ["tEvolveStart"]
+        if reg["iTimeStep"] > 1
+            reg["tEvolveTotal"] += tEvolve
+            push!(reg["dtVecEvolve"], tEvolve)
         end
-        global firstPass = false
-        println("Lagrangian solver timings: current evolve = ",
-            round(tEvolve, sigdigits=4), " s; total time = ",
-            round(totalTime, sigdigits=4), " s"
+        print("Lagrangian solver timings: current evolve = \
+            $(fmt_time(tEvolve)), s; total time = \
+            $(fmt_time(reg["tEvolveTotal"])) s\n"
         )
     end
     return nothing
@@ -1077,17 +1103,23 @@ function init_async_evolve!(
             unlock(l)
         end
 
-        tDeviceCompute = time() - tDeviceCompute
-        tEvolve = time() - tStart
-        global totalTime += tEvolve
+        dtDeviceCompute = time() - tDeviceCompute
+        tEvolve = time() - reg["tEvolveStart"]
+        if reg["iTimeStep"] > 1
+            reg["tEvolveTotal"] += tEvolve
+            push!(reg["dtVecEvolve"], tEvolve)
+            reg["tDeviceComputeTotal"] += dtDeviceCompute
+        end
         print("Lagrangian solver: device compute time = \
-            $(round(tDeviceCompute, sigdigits=4)) s; \
+            $(fmt_time(dtDeviceCompute)) s; \
             evolve time incl. communication = \
-            $(round(tEvolve, sigdigits=4)) s; total evolve time = \
-            $(round(totalTime, sigdigits=4)) s\n"
+            $(fmt_time(tEvolve)) s; total evolve time = \
+            $(fmt_time(reg["tEvolveTotal"])) s\n"
         )
 
         wait(control.events.Eulerian_computed)
+
+        reg["tEvolveStart"] = time()
         GC.enable(false)
 
         # Correct and estimate the source
@@ -1138,11 +1170,10 @@ end
 # Drives evolve on GPU
 function evolve!(control, ::GPU)
     unlock(control.locks.eulerianComms[comm.jlRank])
-    if !firstPass
+    if reg["iTimeStep"] > 1
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
     end
-    global firstPass = false
     wait(control.events.U_copied)
     lock(control.locks.eulerianComms[comm.jlRank])
     return nothing
@@ -1393,18 +1424,29 @@ function evolve_cloud(Δt)
     # threads.  The error occurs when the garbage collector (GC) is triggered
     # in more than one thread at the same time.  Thus, trigger GC manually and
     # then disable it in the affected functions.
-    dtTimeStep = time() - tTimeStep
-    global tTimeStep = time()
-    global tTotalNoInit += dtTimeStep
-    # Exclude first time step as well
-    if nTimeSteps == 1 tTotalNoInit = 0 end
-    global nTimeSteps += 1
-    timing(tEulerTimeStep, "Computed Eulerian phase")
-    print("Time step wall clock time = $(fmt_time(dtTimeStep)) s\n")
+    global reg, comm
+
+    # Timings
+    reg["iTimeStep"] += 1
+    dtVec = time() - reg["tAllStart"]
+    dtEuler = time() - reg["tEulerStart"]
+    reg["tAllStart"] = time()
+    # Exclude first time step
+    timing(reg["tEulerStart"], "Computed Eulerian phase")
+    if reg["iTimeStep"] > 2
+        reg["tAllTotal"] += dtVec
+        reg["tEulerTotal"] += dtEuler
+        push!(reg["dtVecAll"], dtVec)
+        push!(reg["dtVecEuler"], dtEuler)
+    end
+    if  comm.isMaster && reg["iTimeStep"] == reg["nTimeStepsWriteTimings"]
+        save_timings(comm, reg)
+    end
+    print("Time step wall clock time = $(fmt_time(dtVec)) s\n")
     print("Total wall clock time excl. initialization = \
-        $(fmt_time(tTotalNoInit)) s\n"
+        $(fmt_time(reg["tAllTotal"])) s\n"
     )
-    global reg
+
     GC.enable(true)
     reg["timestepsSinceLastGC"] += 1
     if reg["timestepsSinceLastGC"] >= reg["noGcTimestepInterval"]
@@ -1425,12 +1467,11 @@ function evolve_cloud(Δt)
         end
     end
 
-    global tStart = time()
     evolve!(control, executor)
 
     # Enable GC
     GC.enable(true)
-    global tEulerTimeStep = time()
+    reg["tEulerStart"] = time()
     return nothing
 end
 
@@ -1477,9 +1518,22 @@ tNow = timing(tNow, "Initialized control")
 reg["eulerian"] = Vector{TwoWayEulerian{VectorField}}(undef, comm.size)
 tNow = timing(tNow, "Allocated Eulerian ranks array")
 
-tStart = time()
-totalTime = 0.0
-firstPass = true
+# Global timers
+reg["iTimeStep"] = 0
+
+reg["tAllStart"] = time()
+reg["tAllTotal"] = 0.0
+reg["dtVecAll"] = scalar[]
+
+reg["tEulerStart"] = time()
+reg["tEulerTotal"] = 0.0
+reg["dtVecEuler"] = scalar[]
+
+reg["tEvolveStart"] = time()
+reg["tEvolveTotal"] = 0.0
+reg["dtVecEvolve"] = scalar[]
+
+reg["tDeviceComputeTotal"] = 0.0
 
 # Lock own Eulerian to put async evolve on wait until it's notified by call to
 # evolve_cloud from OF
@@ -1547,12 +1601,6 @@ if isinteractive()
     evolve_cloud(1e-3)
     evolve_cloud(1e-3)
 end
-
-# Global timers
-tTimeStep = time()
-tEulerTimeStep = time()
-tTotalNoInit = 0
-nTimeSteps = 0
 
 gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
 reg["gc_num"] = Base.gc_num()
