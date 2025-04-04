@@ -1068,9 +1068,6 @@ function init_async_evolve!(
 
         tDeviceCompute = time()
 
-        for l in control.locks.eulerianComms
-            lock(l)
-        end
         lock(control.locks.chunkTransfers) do
             @sync begin
                 for (i, chunk) in enumerate(chunks)
@@ -1098,9 +1095,6 @@ function init_async_evolve!(
                     end
                 end
             end
-        end
-        for l in control.locks.eulerianComms
-            unlock(l)
         end
 
         dtDeviceCompute = time() - tDeviceCompute
