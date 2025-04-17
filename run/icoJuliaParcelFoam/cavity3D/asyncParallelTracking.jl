@@ -42,6 +42,7 @@ using Accessors
 using MPI
 using Base.Threads
 using HilbertSpaceFillingCurve
+using Statistics
 
 ΔtLoadModules = time() - tNow
 
@@ -70,24 +71,37 @@ function fmt_time(t)
 end
 
 function save_timings(comm, reg)
-    open("stats_np$(comm.size)","w") do io
+    paddedNCores = lpad(string(comm.size), 4, '0')
+    open("stats_np$paddedNCores","w") do io
         println(io, "\
-            tAllTotal tAllMean tAllStd \
-            tEulerTotal tEulerMean tEulerStd \
-            tEvolveTotal tEvolveMean tEvolveStd \
-            tDeviceComputeTotal\
+            nTimeSteps \
+            tAllTotal tEulerTotal tEvolveTotal tDeviceComputeTotal \
+            tAllMean tEulerMean tEvolveMean tDeviceComputeMean \
+            tAllStd tEulerStd tEvolveStd tDeviceComputeStd\
         ")
+        # Timings may have different count deu to async execution
+        nTimes = min(length(reg["dtVecEuler"]), length(reg["dtVecEvolve"]))
+        dtAll = first(reg["dtVecAll"], nTimes)
+        dtEul = first(reg["dtVecEuler"], nTimes)
+        dtEvo = first(reg["dtVecEvolve"], nTimes)
+        dtDev = first(reg["dtVecDeviceCompute"], nTimes)
         timings = scalar[
-            reg["tAllTotal"],
-            mean(reg["dtVecAll"]), std(reg["dtVecAll"]),
-            reg["tEulerTotal"],
-            mean(reg["dtVecEuler"]), std(reg["dtVecEuler"]),
-            reg["tEvolveTotal"],
-            mean(reg["dtVecEvolve"]), std(reg["dtVecEvolve"]),
-            reg["tDeviceComputeTotal"]
+            sum(dtAll),
+            sum(dtEul),
+            sum(dtEvo),
+            sum(dtDev),
+            mean(dtAll),
+            mean(dtEul),
+            mean(dtEvo),
+            mean(dtDev),
+            std(dtAll),
+            std(dtEul),
+            std(dtEvo),
+            std(dtDev)
         ]
+        print(io, nTimes)
         for t in timings
-            print(io, "$(fmt_time(t)) ")
+            print(io, " $(fmt_time(t))")
         end
         print(io, "\n")
     end
@@ -276,8 +290,11 @@ struct Events
     U_copied::Event
     S_copied::Event
     Eulerian_computed::Event
+    GC_finished::Event
+    GC_enabled::Event
 
-    Events() = new(Event(true), Event(true), Event(true))
+    Events() =
+        new(Event(true), Event(true), Event(true), Event(true), Event(true))
 end
 
 # Extrapolation of sources
@@ -807,7 +824,7 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
         end
 
         tEvolve = time() - ["tEvolveStart"]
-        if reg["iTimeStep"] > 1
+        if reg["iTimeStep"] > reg["nSkipInitTimeStepsProfiling"]
             reg["tEvolveTotal"] += tEvolve
             push!(reg["dtVecEvolve"], tEvolve)
         end
@@ -888,11 +905,14 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
         for req in eulerianSreqs comm_wait(req) end
 
         # Enable garbage collector at the same time as other thread
-        GC.enable(true)
-
+        if reg["timeStepsSinceLastGC"] >= reg["noGcTimeStepInterval"]
+            GC.enable(true)
+            notify(control.events.GC_enabled)
+            wait(control.events.GC_finished)
+            GC.enable(false)
+        end
         notify(control.events.U_copied)
         wait(control.events.Eulerian_computed)
-        GC.enable(false)
 
         sourceRreqs, sourceBuffers = receive_sources(inqRanks, comm, eulerian)
         lock(control.locks.eulerianComms[comm.jlRank]) do
@@ -974,6 +994,8 @@ function init_async_evolve!(
             end
         end
     end
+
+    iTimeStep = 0
 
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
@@ -1063,7 +1085,12 @@ function init_async_evolve!(
         empty!(comm.member.requiredEulerianRanks)
 
         # Enable garbage collector at the same time as other thread
-        GC.enable(true)
+        if reg["timeStepsSinceLastGC"] >= reg["noGcTimeStepInterval"]
+            GC.enable(true)
+            notify(control.events.GC_enabled)
+            wait(control.events.GC_finished)
+            GC.enable(false)
+        end
         notify(control.events.U_copied)
 
         tDeviceCompute = time()
@@ -1099,9 +1126,11 @@ function init_async_evolve!(
 
         dtDeviceCompute = time() - tDeviceCompute
         tEvolve = time() - reg["tEvolveStart"]
-        if reg["iTimeStep"] > 1
+        iTimeStep += 1
+        if iTimeStep > reg["nSkipInitTimeStepsProfiling"]
             reg["tEvolveTotal"] += tEvolve
             push!(reg["dtVecEvolve"], tEvolve)
+            push!(reg["dtVecDeviceCompute"], dtDeviceCompute)
             reg["tDeviceComputeTotal"] += dtDeviceCompute
         end
         print("Lagrangian solver: device compute time = \
@@ -1114,7 +1143,6 @@ function init_async_evolve!(
         wait(control.events.Eulerian_computed)
 
         reg["tEvolveStart"] = time()
-        GC.enable(false)
 
         # Correct and estimate the source
         lock(control.locks.eulerianComms[comm.jlRank]) do
@@ -1161,16 +1189,57 @@ function init_async_evolve!(
     return nothing
 end
 
+function collect_garbage_with_stats()
+    GC.enable(true)
+    gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
+    reg["gc_num"] = Base.gc_num()
+    println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
+    tNow = time()
+    # Fix: call gc with preceding sleep often results in segfault
+    sleep(1e-2)
+    GC.gc()
+    timing(tNow, "Run garbage collection")
+    reg["timeStepsSinceLastGC"] = 0
+    GC.enable(false)
+end
+
 # Drives evolve on GPU
 function evolve!(control, ::GPU)
     unlock(control.locks.eulerianComms[comm.jlRank])
     if reg["iTimeStep"] > 1
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
+        if reg["timeStepsSinceLastGC"] >= reg["noGcTimeStepInterval"]
+            wait(control.events.GC_enabled)
+            collect_garbage_with_stats()
+            notify(control.events.GC_finished)
+        end
     end
     wait(control.events.U_copied)
+    # Update after a synchronization point to prevent race condition
+    reg["timeStepsSinceLastGC"] += 1
     lock(control.locks.eulerianComms[comm.jlRank])
     return nothing
+end
+
+# Finishes device kernels and blocks starts of new kernels.  To be run at Julia
+# exit.
+function finalize_evolve()
+    if comm.isMaster
+        println("Saving timings")
+        save_timings(comm, reg)
+    end
+    unlock(control.locks.eulerianComms[comm.jlRank])
+    # Acquiring this lock ensures that no kernels are running that would throw
+    # an error when aborted
+    lock(control.locks.chunkTransfers)
+    notify(control.events.Eulerian_computed)
+    wait(control.events.S_copied)
+    if reg["timeStepsSinceLastGC"] >= reg["noGcTimeStepInterval"]
+        wait(control.events.GC_enabled)
+        notify(control.events.GC_finished)
+    end
+    wait(control.events.U_copied)
 end
 
 function compute_bounding_box(chunk, executor::GPU)
@@ -1425,34 +1494,21 @@ function evolve_cloud(Δt)
     dtVec = time() - reg["tAllStart"]
     dtEuler = time() - reg["tEulerStart"]
     reg["tAllStart"] = time()
-    # Exclude first time step
     timing(reg["tEulerStart"], "Computed Eulerian phase")
-    if reg["iTimeStep"] > 2
+    # Exclude predefined number of initial time steps
+    if reg["iTimeStep"] > reg["nSkipInitTimeStepsProfiling"]
         reg["tAllTotal"] += dtVec
         reg["tEulerTotal"] += dtEuler
         push!(reg["dtVecAll"], dtVec)
         push!(reg["dtVecEuler"], dtEuler)
     end
-    if  comm.isMaster && reg["iTimeStep"] == reg["nTimeStepsWriteTimings"]
+    if  comm.isMaster && reg["iTimeStep"] > 10
         save_timings(comm, reg)
     end
     print("Time step wall clock time = $(fmt_time(dtVec)) s\n")
     print("Total wall clock time excl. initialization = \
         $(fmt_time(reg["tAllTotal"])) s\n"
     )
-
-    GC.enable(true)
-    reg["timestepsSinceLastGC"] += 1
-    if reg["timestepsSinceLastGC"] >= reg["noGcTimestepInterval"]
-        gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
-        reg["gc_num"] = Base.gc_num()
-        tNow = time()
-        GC.gc()
-        reg["timestepsSinceLastGC"] = 0
-        timing(tNow, "Run garbage collection")
-        println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
-    end
-    GC.enable(false)
 
     if comm.isMaster
         print("Evolve cloud\n")
@@ -1495,11 +1551,11 @@ if comm.size == 1
     decomposition = (1, 1, 1)
 end
 
-reg["noGcTimestepInterval"] = 100
-reg["timestepsSinceLastGC"] = 0
+reg["noGcTimeStepInterval"] = 100
+reg["timeStepsSinceLastGC"] = 1
 
 @show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending decomposition
-@show reg["noGcTimestepInterval"]
+@show reg["noGcTimeStepInterval"]
 
 mesh = Mesh(nCellsPerDirection, origin, ending, decomposition)
 tNow = timing(tNow, "Initialized mesh")
@@ -1514,6 +1570,7 @@ tNow = timing(tNow, "Allocated Eulerian ranks array")
 
 # Global timers
 reg["iTimeStep"] = 0
+reg["nSkipInitTimeStepsProfiling"] = 2
 
 reg["tAllStart"] = time()
 reg["tAllTotal"] = 0.0
@@ -1528,6 +1585,7 @@ reg["tEvolveTotal"] = 0.0
 reg["dtVecEvolve"] = scalar[]
 
 reg["tDeviceComputeTotal"] = 0.0
+reg["dtVecDeviceCompute"] = scalar[]
 
 # Lock own Eulerian to put async evolve on wait until it's notified by call to
 # evolve_cloud from OF
@@ -1595,6 +1653,9 @@ if isinteractive()
     evolve_cloud(1e-3)
     evolve_cloud(1e-3)
 end
+
+# Run finalization function at Julia exit to let the device finish the kernels
+atexit(finalize_evolve)
 
 gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
 reg["gc_num"] = Base.gc_num()

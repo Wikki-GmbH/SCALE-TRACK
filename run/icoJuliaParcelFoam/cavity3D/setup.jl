@@ -3,7 +3,6 @@ nCellsPerDirection = 40
 decomposition = (2, 2, 5)
 nParticles = 50_000_000
 nChunksPerDevice = 100
-reg["nTimeStepsWriteTimings"] = 1000
 
 # Geometry
 origin = 0.0
