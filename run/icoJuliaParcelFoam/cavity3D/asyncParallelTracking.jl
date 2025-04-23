@@ -288,13 +288,16 @@ end
 
 struct Events
     U_copied::Event
+    U_locked::Event
     S_copied::Event
     Eulerian_computed::Event
     GC_finished::Event
     GC_enabled::Event
 
     Events() =
-        new(Event(true), Event(true), Event(true), Event(true), Event(true))
+        new(Event(true), Event(true), Event(true), Event(true), Event(true),
+            Event(true)
+        )
 end
 
 # Extrapolation of sources
@@ -870,7 +873,9 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     GC.enable(false)
+    iTimeStep = 0
     while true
+        iTimeStep += 1
         # Non-blocking consensus for processing Eulerian requests
         barrierFlag = Ref{Cint}(0)
         probeFlag = Ref{Cint}(0)
@@ -904,8 +909,8 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
         eulerianSreqs = serve_eulerian(inqRanks, eulerian, comm, control)
         for req in eulerianSreqs comm_wait(req) end
 
-        # Enable garbage collector at the same time as other thread
-        if reg["timeStepsSinceLastGC"] >= reg["noGcTimeStepInterval"]
+        # Enable garbage collector at the same time as the other thread
+        if iTimeStep == 1 || iTimeStep % reg["gcTimeStepInterval"] == 0
             GC.enable(true)
             notify(control.events.GC_enabled)
             wait(control.events.GC_finished)
@@ -926,6 +931,9 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
         empty!(inqRanks)
 
         notify(control.events.S_copied)
+        if iTimeStep == 1
+            wait(control.events.U_locked)
+        end
     end
     return nothing
 end
@@ -1000,6 +1008,7 @@ function init_async_evolve!(
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
+        iTimeStep += 1
         # Non-blocking consensus for processing Eulerian requests
         reqRanks = lock(control.locks.eulerianRequest) do
             # Exclude self from sending Eulerian requests
@@ -1084,8 +1093,8 @@ function init_async_evolve!(
 
         empty!(comm.member.requiredEulerianRanks)
 
-        # Enable garbage collector at the same time as other thread
-        if reg["timeStepsSinceLastGC"] >= reg["noGcTimeStepInterval"]
+        # Enable garbage collector at the same time as the other thread
+        if iTimeStep == 1 || iTimeStep % reg["gcTimeStepInterval"] == 0
             GC.enable(true)
             notify(control.events.GC_enabled)
             wait(control.events.GC_finished)
@@ -1126,7 +1135,6 @@ function init_async_evolve!(
 
         dtDeviceCompute = time() - tDeviceCompute
         tEvolve = time() - reg["tEvolveStart"]
-        iTimeStep += 1
         if iTimeStep > reg["nSkipInitTimeStepsProfiling"]
             reg["tEvolveTotal"] += tEvolve
             push!(reg["dtVecEvolve"], tEvolve)
@@ -1185,6 +1193,9 @@ function init_async_evolve!(
         empty!(inqRanks)
 
         notify(control.events.S_copied)
+        if iTimeStep == 1
+            wait(control.events.U_locked)
+        end
     end
     return nothing
 end
@@ -1199,25 +1210,43 @@ function collect_garbage_with_stats()
     sleep(1e-2)
     GC.gc()
     timing(tNow, "Run garbage collection")
-    reg["timeStepsSinceLastGC"] = 0
     GC.enable(false)
 end
 
 # Drives evolve on GPU
 function evolve!(control, ::GPU)
     unlock(control.locks.eulerianComms[comm.jlRank])
-    if reg["iTimeStep"] > 1
+
+    # Evolve Lagrangian phase synchronously during the first time step to
+    # provide reasonable initial sources
+    if reg["iTimeStep"] == 1
+        # Always collect garbage during the first time step
+        wait(control.events.GC_enabled)
+        collect_garbage_with_stats()
+        notify(control.events.GC_finished)
+
+        wait(control.events.U_copied)
+        notify(control.events.Eulerian_computed)
+
+        print("Synchronous time step.  Waiting for tracking and source \
+            copying to finish.\n"
+        )
+        wait(control.events.S_copied)
+        lock(control.locks.eulerianComms[comm.jlRank])
+        notify(control.events.U_locked)
+        return nothing
+    elseif reg["iTimeStep"] > 2
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
-        if reg["timeStepsSinceLastGC"] >= reg["noGcTimeStepInterval"]
-            wait(control.events.GC_enabled)
-            collect_garbage_with_stats()
-            notify(control.events.GC_finished)
-        end
     end
+
+    if reg["iTimeStep"] % reg["gcTimeStepInterval"] == 0
+        wait(control.events.GC_enabled)
+        collect_garbage_with_stats()
+        notify(control.events.GC_finished)
+    end
+
     wait(control.events.U_copied)
-    # Update after a synchronization point to prevent race condition
-    reg["timeStepsSinceLastGC"] += 1
     lock(control.locks.eulerianComms[comm.jlRank])
     return nothing
 end
@@ -1229,17 +1258,12 @@ function finalize_evolve()
         println("Saving timings")
         save_timings(comm, reg)
     end
-    unlock(control.locks.eulerianComms[comm.jlRank])
+    println("Finalizing Julia program")
+    reg["iTimeStep"] += 1
     # Acquiring this lock ensures that no kernels are running that would throw
     # an error when aborted
     lock(control.locks.chunkTransfers)
-    notify(control.events.Eulerian_computed)
-    wait(control.events.S_copied)
-    if reg["timeStepsSinceLastGC"] >= reg["noGcTimeStepInterval"]
-        wait(control.events.GC_enabled)
-        notify(control.events.GC_finished)
-    end
-    wait(control.events.U_copied)
+    evolve!(control, executor)
 end
 
 function compute_bounding_box(chunk, executor::GPU)
@@ -1551,11 +1575,7 @@ if comm.size == 1
     decomposition = (1, 1, 1)
 end
 
-reg["noGcTimeStepInterval"] = 100
-reg["timeStepsSinceLastGC"] = 1
-
 @show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending decomposition
-@show reg["noGcTimeStepInterval"]
 
 mesh = Mesh(nCellsPerDirection, origin, ending, decomposition)
 tNow = timing(tNow, "Initialized mesh")
@@ -1567,6 +1587,10 @@ tNow = timing(tNow, "Initialized control")
 # Allocate Eulerian fields
 reg["eulerian"] = Vector{TwoWayEulerian{VectorField}}(undef, comm.size)
 tNow = timing(tNow, "Allocated Eulerian ranks array")
+
+# Garbage collection
+reg["gcTimeStepInterval"] = 100
+@show reg["gcTimeStepInterval"]
 
 # Global timers
 reg["iTimeStep"] = 0
