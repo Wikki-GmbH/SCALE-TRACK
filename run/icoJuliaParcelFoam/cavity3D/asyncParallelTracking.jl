@@ -394,10 +394,10 @@ struct Comm{T<:CommMember}
     communicator::MPI.Comm
     isMaster::Bool
     isHost::Bool
-    rank::Integer
-    jlRank::Integer
-    masterRank::Integer
-    size::Integer
+    rank::Int64
+    jlRank::Int64
+    masterRank::Int64
+    size::Int64
 end
 
 function Comm(member, communicator)
@@ -469,17 +469,25 @@ function count_devices_per_node(::GPU)
     return length(CUDA.devices())
 end
 
-function allocate_chunk(::CPU, constructorArgs...)
+function allocate_chunks(nChunks, ::Comm{Master}, ::CPU)
+    return Vector{Chunk{Vector{scalar}, Vector{Time}}}(undef, nChunks)
+end
+
+function allocate_chunks(nChunks, ::Comm{Master}, ::GPU)
+    return Vector{Chunk{CuVector{scalar}, CuVector{Time}}}(undef, nChunks)
+end
+
+function construct_chunk(::CPU, constructorArgs...)
     return Chunk{Vector{scalar}, Vector{Time}}(constructorArgs...)
 end
 
-function allocate_chunk(::GPU, constructorArgs...)
+function construct_chunk(::GPU, constructorArgs...)
     return Chunk{CuVector{scalar}, CuVector{Time}}(constructorArgs...)
 end
 
-function allocate!(chunks, ::Comm{Master}, executor, constructorArgs...)
+function construct!(chunks, ::Comm{Master}, executor, constructorArgs...)
     for i in eachindex(chunks)
-        chunks[i] = allocate_chunk(executor, constructorArgs...)
+        chunks[i] = construct_chunk(executor, constructorArgs...)
     end
 end
 
@@ -946,33 +954,28 @@ function init_async_evolve!(
     CUDA.device!(comm.member.deviceNumber)
     @debugCommPrintln("Hosting device $(CUDA.device())")
 
-    if !haskey(reg, "deviceEulerian")
-        # CUDA containers that own the Eulerian fields on the device
-        reg["deviceEulerian"] =
-            Vector{TwoWayEulerian{CuVector{ScalarVec}}}(undef, comm.size)
-        # CUDA container for the pointers (CuDeviceVector) to the Eulerian
-        # containers.  It needs to be stored separately since
-        # CuVector{CuVector} is not possible.
-        reg["deviceEulerianPointer"] =
-            CuVector{TwoWayEulerian{CuDeviceVector{ScalarVec, 1}}}(
-                undef, comm.size
-            )
-        for i in eachindex(reg["deviceEulerian"])
-            # Initialize Eulerian fields
-            reg["deviceEulerian"][i] =
-                TwoWayEulerian{CuVector{ScalarVec}}(eulerian[i].N)
-            # Get the pointers on the device (cudaconvert) and store them in
-            # the pointer container.
-            CUDA.@allowscalar reg["deviceEulerianPointer"][i] =
-                cudaconvert(reg["deviceEulerian"][i])
-        end
+    # CUDA containers that own the Eulerian fields on the device
+    deviceEulerian =
+        Vector{TwoWayEulerian{CuVector{ScalarVec}}}(undef, comm.size)
+    # CUDA container for the pointers (CuDeviceVector) to the Eulerian
+    # containers.  It needs to be stored separately since CuVector{CuVector} is
+    # not possible.
+    deviceEulerianPointer =
+        CuVector{TwoWayEulerian{CuDeviceVector{ScalarVec, 1}}}(undef, comm.size)
+    for i in eachindex(deviceEulerian)
+        # Initialize Eulerian fields
+        deviceEulerian[i] = TwoWayEulerian{CuVector{ScalarVec}}(eulerian[i].N)
+        # Get the pointers on the device (cudaconvert) and store them in the
+        # pointer container.
+        CUDA.@allowscalar deviceEulerianPointer[i] =
+            cudaconvert(deviceEulerian[i])
     end
 
     # Compile kernels and prepare configuration
     # Pick any chunk for compilation - only types are important
     aChunk = first(chunks)
     kernel = @cuda launch=false evolve_on_device!(
-        aChunk, reg["deviceEulerianPointer"], mesh, executor
+        aChunk, deviceEulerianPointer, mesh, executor
     )
     config = launch_configuration(kernel.fun)
     threads = min(aChunk.N, config.threads)
@@ -1071,7 +1074,7 @@ function init_async_evolve!(
         eulerianSreqs = serve_eulerian(inqRanks, eulerian, comm, control)
 
         # Reset sources on the device to zero
-        for de in reg["deviceEulerian"]
+        for de in deviceEulerian
             fill!(de.UTrans, ScalarVec(0SCL, 0SCL, 0SCL))  #!!
         end
 
@@ -1087,7 +1090,7 @@ function init_async_evolve!(
             Iterators.map(x -> x+1, comm.member.requiredEulerianRanks)
         for iRank₁ in allReqRanks₁
             lock(control.locks.eulerianComms[iRank₁]) do
-                copyto!(reg["deviceEulerian"][iRank₁].U, eulerian[iRank₁].U)
+                copyto!(deviceEulerian[iRank₁].U, eulerian[iRank₁].U)
             end
         end
 
@@ -1115,7 +1118,7 @@ function init_async_evolve!(
                         copy!(chunk.boundingBox, hostChunkBb)
 
                         kernel(
-                            chunk, reg["deviceEulerianPointer"], mesh, executor;
+                            chunk, deviceEulerianPointer, mesh, executor;
                             threads, blocks
                         )
 
@@ -1156,7 +1159,7 @@ function init_async_evolve!(
         lock(control.locks.eulerianComms[comm.jlRank]) do
             copyto!(
                 eulerian[comm.jlRank].UTrans,
-                reg["deviceEulerian"][comm.jlRank].UTrans
+                deviceEulerian[comm.jlRank].UTrans
             )
             estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
         end
@@ -1169,9 +1172,7 @@ function init_async_evolve!(
         for (i, iRank₀, iRank₁) in zipIter
             @debugCommPrintln("Send source to $iRank₀")
             lock(control.locks.eulerianComms[iRank₁])
-            copyto!(
-                eulerian[iRank₁].UTrans, reg["deviceEulerian"][iRank₁].UTrans
-            )
+            copyto!(eulerian[iRank₁].UTrans, deviceEulerian[iRank₁].UTrans)
             sourceSreqs[i] = MPI.Isend(
                 eulerian[iRank₁].UTrans, comm.communicator, dest=iRank₀, tag=1
             )
@@ -1627,9 +1628,9 @@ if comm.isHost
     end
     @show nParticlesPerChunk
 
-    chunks = Vector{Chunk}(undef, nChunksPerDevice)
+    chunks = allocate_chunks(nChunksPerDevice, comm, executor)
     # init!(chunks, mesh, nParticlesPerChunk, executor)
-    allocate!(chunks, comm, executor, nParticlesPerChunk, μᶜ, ρᵈ, ρᵈ/ρᶜ)
+    construct!(chunks, comm, executor, nParticlesPerChunk, μᶜ, ρᵈ, ρᵈ/ρᶜ)
     initWithHilbert!(chunks, mesh, comm, nParticlesPerChunk, executor)
 
     tNow = timing(tNow, "Initialized particle chunks")
