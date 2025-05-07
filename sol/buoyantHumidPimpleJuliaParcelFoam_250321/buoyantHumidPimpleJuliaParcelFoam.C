@@ -97,7 +97,7 @@ int main(int argc, char *argv[])
     Info<< "Initialising Julia" << endl;
     int jl_argc = 2;
     // int jl_argc = 3;
-    string threadsOpt = "--threads=2";
+    string threadsOpt = "--threads=1,1";
     // string debugOpt = "--debug-info=2";
     char** jl_argv = static_cast<char**>(malloc(sizeof(char*)*jl_argc));
     jl_argv[0] = argv[0];

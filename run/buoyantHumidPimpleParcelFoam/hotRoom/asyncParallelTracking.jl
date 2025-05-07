@@ -41,6 +41,8 @@ import Base: *, Event
 using Accessors
 using MPI
 using Base.Threads
+using HilbertSpaceFillingCurve
+using Statistics
 
 ΔtLoadModules = time() - tNow
 
@@ -69,24 +71,37 @@ function fmt_time(t)
 end
 
 function save_timings(comm, reg)
-    open("stats_np$(comm.size)","w") do io
+    paddedNCores = lpad(string(comm.size), 4, '0')
+    open("stats_np$paddedNCores","w") do io
         println(io, "\
-            tAllTotal tAllMean tAllStd \
-            tEulerTotal tEulerMean tEulerStd \
-            tEvolveTotal tEvolveMean tEvolveStd \
-            tDeviceComputeTotal\
+            nTimeSteps \
+            tAllTotal tEulerTotal tEvolveTotal tDeviceComputeTotal \
+            tAllMean tEulerMean tEvolveMean tDeviceComputeMean \
+            tAllStd tEulerStd tEvolveStd tDeviceComputeStd\
         ")
+        # Timings may have different count deu to async execution
+        nTimes = min(length(reg["dtVecEuler"]), length(reg["dtVecEvolve"]))
+        dtAll = first(reg["dtVecAll"], nTimes)
+        dtEul = first(reg["dtVecEuler"], nTimes)
+        dtEvo = first(reg["dtVecEvolve"], nTimes)
+        dtDev = first(reg["dtVecDeviceCompute"], nTimes)
         timings = scalar[
-            reg["tAllTotal"],
-            mean(reg["dtVecAll"]), std(reg["dtVecAll"]),
-            reg["tEulerTotal"],
-            mean(reg["dtVecEuler"]), std(reg["dtVecEuler"]),
-            reg["tEvolveTotal"],
-            mean(reg["dtVecEvolve"]), std(reg["dtVecEvolve"]),
-            reg["tDeviceComputeTotal"]
+            sum(dtAll),
+            sum(dtEul),
+            sum(dtEvo),
+            sum(dtDev),
+            mean(dtAll),
+            mean(dtEul),
+            mean(dtEvo),
+            mean(dtDev),
+            std(dtAll),
+            std(dtEul),
+            std(dtEvo),
+            std(dtDev)
         ]
+        print(io, nTimes)
         for t in timings
-            print(io, "$(fmt_time(t)) ")
+            print(io, " $(fmt_time(t))")
         end
         print(io, "\n")
     end
@@ -286,10 +301,16 @@ end
 
 struct Events
     U_copied::Event
+    U_locked::Event
     S_copied::Event
     Eulerian_computed::Event
+    GC_finished::Event
+    GC_enabled::Event
 
-    Events() = new(Event(true), Event(true), Event(true))
+    Events() =
+        new(Event(true), Event(true), Event(true), Event(true), Event(true),
+            Event(true)
+        )
 end
 
 # Extrapolation of sources
@@ -418,10 +439,10 @@ struct Comm{T<:CommMember}
     communicator::MPI.Comm
     isMaster::Bool
     isHost::Bool
-    rank::Integer
-    jlRank::Integer
-    masterRank::Integer
-    size::Integer
+    rank::Int64
+    jlRank::Int64
+    masterRank::Int64
+    size::Int64
 end
 
 function Comm(member, communicator)
@@ -493,16 +514,26 @@ function count_devices_per_node(::GPU)
     return length(CUDA.devices())
 end
 
-function allocate_chunk(::CPU, constructorArgs...)
+function allocate_chunks(nChunks, ::Comm{Master}, ::CPU)
+    return Vector{Chunk{Vector{scalar}, Vector{Time}}}(undef, nChunks)
+end
+
+function allocate_chunks(nChunks, ::Comm{Master}, ::GPU)
+    return Vector{Chunk{CuVector{scalar}, CuVector{Time}}}(undef, nChunks)
+end
+
+function construct_chunk(::CPU, constructorArgs...)
     return Chunk{Vector{scalar}, Vector{Time}}(constructorArgs...)
 end
 
-function allocate_chunk(::GPU, constructorArgs...)
+function construct_chunk(::GPU, constructorArgs...)
     return Chunk{CuVector{scalar}, CuVector{Time}}(constructorArgs...)
 end
 
-function allocate_chunk(::Comm{Master}, executor, constructorArgs...)
-    return allocate_chunk(executor, constructorArgs...)
+function construct!(chunks, ::Comm{Master}, executor, constructorArgs...)
+    for i in eachindex(chunks)
+        chunks[i] = construct_chunk(executor, constructorArgs...)
+    end
 end
 
 function set_time!(chunk, t, Δt, ::CPU)
@@ -558,6 +589,104 @@ function init!(chunk, mesh, executor, randSeed=19891)
     fill!(c.W, 0.0)
     return nothing
 end
+
+const bitmask_t = HilbertSpaceFillingCurve.bitmask_t
+
+function hilbert!(px, py, pz, j, p, d::T, ndims, nbits = 32) where T <: Integer
+    @assert ndims*nbits <= sizeof(bitmask_t) * HilbertSpaceFillingCurve.bits_per_byte
+
+    ccall(
+        (:hilbert_i2c, HilbertSpaceFillingCurve.libhilbert), Nothing,
+        (Int, Int, bitmask_t, Ptr{bitmask_t}), ndims, nbits, d, p
+    )
+    px[j] = p[1]
+    py[j] = p[2]
+    pz[j] = p[3]
+    return nothing
+end
+
+function initWithHilbert!(
+    chunks, mesh, comm, nParticlesPerChunk, ::GPU, randSeed=19891
+)
+    nChunksGlobal = length(chunks)
+    startChunk = 0
+    hostCommSize = MPI.Comm_size(comm.member.hostCommunicator)
+    @show hostCommSize
+    if(hostCommSize > 1)
+        startChunk = MPI.Exscan(nChunksGlobal, +, comm.member.hostCommunicator)
+        nChunksGlobal = MPI.Bcast(
+            startChunk + nChunksGlobal,
+            hostCommSize - 1,
+            comm.member.hostCommunicator
+        )
+        @show startChunk nChunksGlobal
+    end
+
+    nHilbert = 10
+    lHilbert = (2^nHilbert)^3
+
+    p_CPU_x = Array{Int}(undef, nParticlesPerChunk)
+    p_CPU_y = Array{Int}(undef, nParticlesPerChunk)
+    p_CPU_z = Array{Int}(undef, nParticlesPerChunk)
+    p_GPU_x = CuArray{Int}(undef, nParticlesPerChunk)
+    p_GPU_y = CuArray{Int}(undef, nParticlesPerChunk)
+    p_GPU_z = CuArray{Int}(undef, nParticlesPerChunk)
+
+    for i in eachindex(chunks)
+        c = chunks[i]
+
+        set_time!(c, 0.0, 0.0, executor)
+
+        rng = default_rng(executor)
+        Random.seed!(rng, randSeed)
+        fill!(c.boundingBox.min, 0.0)
+        fill!(c.boundingBox.max, 0.0)
+        # rand! produces a random number within range [0, 1)
+        rand!(rng, c.d)
+        rand!(rng, c.X)
+        rand!(rng, c.Y)
+        rand!(rng, c.Z)
+        @. c.d = c.d*5e-3SCL + 5e-3SCL
+
+
+        hStart = round(Int, (startChunk + (i - 1)*lHilbert)/nChunksGlobal)
+        hEnd = round(Int, (startChunk + i*lHilbert)/nChunksGlobal)
+        # The parent function is not type stable.  Put the busy loop into a
+        # function to prevent allocations.
+        function run_hilbert()
+            p = HilbertSpaceFillingCurve.bitmask_t.(zeros(3))
+            for j in 1:c.N
+                hilbert!(
+                    p_CPU_x, p_CPU_y, p_CPU_z, j, p, rand(hStart:hEnd), 3,
+                    nHilbert
+                )
+            end
+        end
+        run_hilbert()
+
+        copyto!(p_GPU_x, p_CPU_x)
+        copyto!(p_GPU_y, p_CPU_y)
+        copyto!(p_GPU_z, p_CPU_z)
+
+        @. c.X = (
+            mesh.origin.x + mesh.Δ.x*((mesh.N.x*p_GPU_x)÷2^nHilbert + c.X)
+        )*0.99999SCL  # prevent position at a domain boundary
+        @. c.Y = (
+            mesh.origin.y + mesh.Δ.y*((mesh.N.y*p_GPU_y)÷2^nHilbert + c.Y)
+        )*0.99999SCL
+        @. c.Z = (
+            mesh.origin.z + mesh.Δ.z*((mesh.N.z*p_GPU_z)÷2^nHilbert + c.Z)
+        )*0.99999SCL
+
+        fill!(c.T, 288.15SCL)   # @SiSc: added temperature
+        fill!(c.U, 0.0)
+        fill!(c.V, 0.0)
+        fill!(c.W, 0.0)
+    end
+
+    return nothing
+end
+
 
 function init_random!(field, interval, offset)
     rng = Random.default_rng()
@@ -670,20 +799,32 @@ end
 function estimate_source!(
     currUTrans, currHTrans, currRhoVTrans, extrapolator::ConstExtrapolator
 )
-#    currUTrans .= 2.0.*currUTrans .- extrapolator.prevUTrans
-#    for i in eachindex(control.extrapolator.prevUTrans)
-#        @inbounds extrapolator.prevUTrans[i] = currUTrans[i]
-#    end
+   currUTrans .= 2.0.*currUTrans .- extrapolator.prevUTrans
+   for i in eachindex(control.extrapolator.prevUTrans)
+       @inbounds extrapolator.prevUTrans[i] = currUTrans[i]
+   end
 
-#    currHTrans .= 2.0*currHTrans .- extrapolator.prevHTrans
-#    for i in eachindex(control.extrapolator.prevHTrans)
-#        @inbounds extrapolator.prevHTrans[i] = currHTrans[i]
-#    end
+   currHTrans .= 2.0*currHTrans .- extrapolator.prevHTrans
+   for i in eachindex(control.extrapolator.prevHTrans)
+       @inbounds extrapolator.prevHTrans[i] = currHTrans[i]
+   end
 
-#    currRhoVTrans .= 2.0*currRhoVTrans .- extrapolator.prevRhoVTrans
-#    for i in eachindex(control.extrapolator.prevRhoVTrans)
-#        @inbounds extrapolator.prevRhoVTrans[i] = currRhoVTrans[i]
-#    end
+   currRhoVTrans .= 2.0*currRhoVTrans .- extrapolator.prevRhoVTrans
+   for i in eachindex(control.extrapolator.prevRhoVTrans)
+       @inbounds extrapolator.prevRhoVTrans[i] = currRhoVTrans[i]
+   end
+end
+
+function reset_sources!(eulerian)
+    fill!(eulerian.UTrans, ScalarVec(0SCL, 0SCL, 0SCL))
+    fill!(eulerian.hTrans, 0SCL)
+    fill!(eulerian.rhoVTrans, 0SCL)
+end
+
+function reset_all_sources!(eulerianVector)
+    for eulerian in eulerianVector
+        reset_sources!(eulerian)
+    end
 end
 
 # Find an extremum by comparing the element i of array arr with the value val
@@ -748,10 +889,8 @@ function determine!(requiredEulerianRanks, chunkBoundingBox, mesh, control)
     lock(control.locks.eulerianRequest) do
         union!(
             requiredEulerianRanks,
-            Set{label}(
-                li[minP[1]:maxP[1], minP[2]:maxP[2], minP[3]:maxP[3]]
-                .- 1  # Rank indexing is zero-based
-            )
+            li[minP[1]:maxP[1], minP[2]:maxP[2], minP[3]:maxP[3]]
+            .- 1  # Rank indexing is zero-based
         )
     end
 end
@@ -761,12 +900,11 @@ function evolve!(chunk, eulerian, mesh, Δt, control, executor::CPU)
     @inbounds begin
         nSteps = 10LBL
         ΔtP = chunk.time[1].Δt / nSteps
-        for i = 10LBL:chunk.N
+        for i = 1LBL:chunk.N
             evolve_particle!(chunk, eulerian, i, ΔtP, mesh, nSteps, executor)
         end
-
         tEvolve = time() - ["tEvolveStart"]
-        if reg["iTimeStep"] > 1
+        if reg["iTimeStep"] > reg["nSkipInitTimeStepsProfiling"]
             reg["tEvolveTotal"] += tEvolve
             push!(reg["dtVecEvolve"], tEvolve)
         end
@@ -852,7 +990,9 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     GC.enable(false)
+    iTimeStep = 0
     while true
+        iTimeStep += 1
         # Non-blocking consensus for processing Eulerian requests
         barrierFlag = Ref{Cint}(0)
         probeFlag = Ref{Cint}(0)
@@ -893,18 +1033,24 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
         for req in eulerianSreqsT comm_wait(req) end
         for req in eulerianSreqsrhoV comm_wait(req) end
 
-        # Enable garbage collector at the same time as other thread
-        GC.enable(true)
-
+        # Enable garbage collector at the same time as the other thread
+        if iTimeStep == 1 || iTimeStep % reg["gcTimeStepInterval"] == 0
+            GC.enable(true)
+            notify(control.events.GC_enabled)
+            wait(control.events.GC_finished)
+            GC.enable(false)
+        end
         notify(control.events.U_copied)
         wait(control.events.Eulerian_computed)
-        GC.enable(false)
 
         # @SiSc: changed to sourceRreqsU; added T and rhoV
         sourceRreqsU, sourceRreqsT, sourceRreqsrhoV,
             sourceBuffersU, sourceBuffersT, sourceBuffersrhoV =
             receive_sources(inqRanks, comm, eulerian)
+
         lock(control.locks.eulerianComms[comm.jlRank]) do
+            # Reset local sources
+            reset_sources!(eulerian[comm.jlRank])
             # @SiSc: changed to sourceBuffersU; added T and rhoV
             for (i, req) in enumerate(sourceRreqsU)
                 comm_wait(req)
@@ -930,6 +1076,9 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
         empty!(inqRanks)
 
         notify(control.events.S_copied)
+        if iTimeStep == 1
+            wait(control.events.U_locked)
+        end
     end
     return nothing
 end
@@ -942,38 +1091,38 @@ function init_async_evolve!(
     CUDA.device!(comm.member.deviceNumber)
     @debugCommPrintln("Hosting device $(CUDA.device())")
 
-    if !haskey(reg, "deviceEulerian")
-        # CUDA containers that own the Eulerian fields on the device
-        reg["deviceEulerian"] =
-            Vector{TwoWayEulerian{CuVector{ScalarVec},CuVector{scalar}}}(
-                undef, comm.size
-            ) # @SiSc: added ", CuVector{scalar}"
-        # CUDA container for the pointers (CuDeviceVector) to the Eulerian
-        # containers.  It needs to be stored separately since
-        # CuVector{CuVector} is not possible.
-        reg["deviceEulerianPointer"] =
-            CuVector{TwoWayEulerian{CuDeviceVector{ScalarVec, 1},CuDeviceVector{scalar,1}}}(
-                undef, comm.size
-            )# @SiSc: added ", CuDeviceVector{scalar,1}"
-        for i in eachindex(reg["deviceEulerian"])
-            # Initialize Eulerian fields
-            reg["deviceEulerian"][i] =
-                TwoWayEulerian{CuVector{ScalarVec}, CuVector{scalar}}(
-                    eulerian[i].N
-                ) # @SiSc: added ", CuVector{scalar}"
-            # Get the pointers on the device (cudaconvert) and store them in
-            # the pointer container.
-            CUDA.@allowscalar reg["deviceEulerianPointer"][i] =
-                cudaconvert(reg["deviceEulerian"][i])
+    # CUDA containers that own the Eulerian fields on the device
+    deviceEulerian =
+        Vector{TwoWayEulerian{CuVector{ScalarVec}, CuVector{scalar}}}(
+            undef, comm.size
+        )
+    # CUDA container for the pointers (CuDeviceVector) to the Eulerian
+    # containers.  It needs to be stored separately since CuVector{CuVector} is
+    # not possible.
+    deviceEulerianPointer =
+        CuVector{TwoWayEulerian{
+            CuDeviceVector{ScalarVec, 1}, CuDeviceVector{scalar,1}
+        }}(undef, comm.size)
+    for i in eachindex(deviceEulerian)
+        # Initialize Eulerian fields
+        deviceEulerian[i] =
+            TwoWayEulerian{CuVector{ScalarVec}, CuVector{scalar}}(eulerian[i].N)
+        # Get the pointers on the device (cudaconvert) and store them in the
+        # pointer container.
+        GC.@preserve deviceEulerian  begin
+            CUDA.@allowscalar deviceEulerianPointer[i] =
+                cudaconvert(deviceEulerian[i])
         end
     end
 
     # Compile kernels and prepare configuration
     # Pick any chunk for compilation - only types are important
     aChunk = first(chunks)
-    kernel = @cuda launch=false evolve_on_device!(
-        aChunk, reg["deviceEulerianPointer"], mesh, executor
-    )
+    GC.@preserve deviceEulerian begin
+        kernel = @cuda launch=false evolve_on_device!(
+            aChunk, deviceEulerianPointer, mesh, executor
+        )
+    end
     config = launch_configuration(kernel.fun)
     threads = min(aChunk.N, config.threads)
     blocks = cld(aChunk.N, threads)
@@ -1003,9 +1152,13 @@ function init_async_evolve!(
         end
     end
 
+    iTimeStep = 0
+
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
+        iTimeStep += 1
+        # @show CUDA.@allowscalar chunks[1]#.X[1]
         # Non-blocking consensus for processing Eulerian requests
         reqRanks = lock(control.locks.eulerianRequest) do
             # Exclude self from sending Eulerian requests
@@ -1081,13 +1234,9 @@ function init_async_evolve!(
         eulerianSreqsU, eulerianSreqsT, eulerianSreqsrhoV =
             serve_eulerian(inqRanks, eulerian, comm, control)
 
-        # Reset sources on the device to zero
-        for de in reg["deviceEulerian"]
-            fill!(de.UTrans, ScalarVec(0SCL, 0SCL, 0SCL)) #!!
-            # @SiSc: added hTrans and rhoVTRans
-            fill!(de.hTrans, 0SCL)
-            fill!(de.rhoVTrans, 0SCL)
-        end
+        # Reset all sources on the device and host to zero
+        reset_all_sources!(deviceEulerian)
+        reset_all_sources!(eulerian)
 
         # @SiSc: changed to eulerianSreqsU; added T and rhoV
         # question @Sergey: additional waits necessary?
@@ -1107,26 +1256,28 @@ function init_async_evolve!(
             Iterators.map(x -> x+1, comm.member.requiredEulerianRanks)
         for iRank₁ in allReqRanks₁
             lock(control.locks.eulerianComms[iRank₁]) do
-                copyto!(reg["deviceEulerian"][iRank₁].U, eulerian[iRank₁].U)
+                copyto!(deviceEulerian[iRank₁].U, eulerian[iRank₁].U)
                 # @SiSc: added T, rhoV
-                copyto!(reg["deviceEulerian"][iRank₁].T, eulerian[iRank₁].T)
+                copyto!(deviceEulerian[iRank₁].T, eulerian[iRank₁].T)
                 copyto!(
-                    reg["deviceEulerian"][iRank₁].rhoV, eulerian[iRank₁].rhoV
+                    deviceEulerian[iRank₁].rhoV, eulerian[iRank₁].rhoV
                 )
             end
         end
 
         empty!(comm.member.requiredEulerianRanks)
 
-        # Enable garbage collector at the same time as other thread
-        GC.enable(true)
+        # Enable garbage collector at the same time as the other thread
+        if iTimeStep == 1 || iTimeStep % reg["gcTimeStepInterval"] == 0
+            GC.enable(true)
+            notify(control.events.GC_enabled)
+            wait(control.events.GC_finished)
+            GC.enable(false)
+        end
         notify(control.events.U_copied)
 
         tDeviceCompute = time()
 
-        for l in control.locks.eulerianComms
-            lock(l)
-        end
         lock(control.locks.chunkTransfers) do
             @sync begin
                 for (i, chunk) in enumerate(chunks)
@@ -1136,10 +1287,12 @@ function init_async_evolve!(
                             fill(Inf, 3), fill(-Inf, 3)
                         )
                         copy!(chunk.boundingBox, hostChunkBb)
-                        kernel(
-                            chunk, reg["deviceEulerianPointer"], mesh, executor;
+
+                        GC.@preserve deviceEulerian kernel(
+                            chunk, deviceEulerianPointer, mesh, executor;
                             threads, blocks
                         )
+
                         copy!(hostChunkBb, chunk.boundingBox)
                         determine!(
                             comm.member.requiredEulerianRanks,
@@ -1153,15 +1306,13 @@ function init_async_evolve!(
                 end
             end
         end
-        for l in control.locks.eulerianComms
-            unlock(l)
-        end
 
         dtDeviceCompute = time() - tDeviceCompute
         tEvolve = time() - reg["tEvolveStart"]
-        if reg["iTimeStep"] > 1
+        if iTimeStep > reg["nSkipInitTimeStepsProfiling"]
             reg["tEvolveTotal"] += tEvolve
             push!(reg["dtVecEvolve"], tEvolve)
+            push!(reg["dtVecDeviceCompute"], dtDeviceCompute)
             reg["tDeviceComputeTotal"] += dtDeviceCompute
         end
         print("Lagrangian solver: device compute time = \
@@ -1174,23 +1325,22 @@ function init_async_evolve!(
         wait(control.events.Eulerian_computed)
 
         reg["tEvolveStart"] = time()
-        GC.enable(false)
 
         # Correct and estimate the source
         lock(control.locks.eulerianComms[comm.jlRank]) do
             copyto!(
                 eulerian[comm.jlRank].UTrans,
-                reg["deviceEulerian"][comm.jlRank].UTrans
+                deviceEulerian[comm.jlRank].UTrans
             )
             # @SiSc: added hTrans
             copyto!(
                 eulerian[comm.jlRank].hTrans,
-                reg["deviceEulerian"][comm.jlRank].hTrans
+                deviceEulerian[comm.jlRank].hTrans
             )
             # @SiSc: added rhoVTrans
             copyto!(
                 eulerian[comm.jlRank].rhoVTrans,
-                reg["deviceEulerian"][comm.jlRank].rhoVTrans
+                deviceEulerian[comm.jlRank].rhoVTrans
             )
             # @SiSc: added hTrans and rhoVTrans
             estimate_source!(
@@ -1216,14 +1366,14 @@ function init_async_evolve!(
             @debugCommPrintln("Send source to $iRank₀")
             lock(control.locks.eulerianComms[iRank₁])
             copyto!(
-                eulerian[iRank₁].UTrans, reg["deviceEulerian"][iRank₁].UTrans
+                eulerian[iRank₁].UTrans, deviceEulerian[iRank₁].UTrans
             )
             sourceSreqsU[i] = MPI.Isend(
                 eulerian[iRank₁].UTrans, comm.communicator, dest=iRank₀, tag=1
             )
             # @SiSc: added hTrans
             copyto!(
-                eulerian[iRank₁].hTrans, reg["deviceEulerian"][iRank₁].hTrans
+                eulerian[iRank₁].hTrans, deviceEulerian[iRank₁].hTrans
             )
             sourceSreqsT[i] = MPI.Isend(
                 eulerian[iRank₁].hTrans, comm.communicator, dest=iRank₀, tag=1
@@ -1231,7 +1381,7 @@ function init_async_evolve!(
             # @SiSc: added rhoVTrans
             copyto!(
                 eulerian[iRank₁].rhoVTrans,
-                reg["deviceEulerian"][iRank₁].rhoVTrans
+                deviceEulerian[iRank₁].rhoVTrans
             )
             sourceSreqsrhoV[i] = MPI.Isend(
                 eulerian[iRank₁].rhoVTrans,
@@ -1276,20 +1426,77 @@ function init_async_evolve!(
         empty!(inqRanks)
 
         notify(control.events.S_copied)
+        if iTimeStep == 1
+            wait(control.events.U_locked)
+        end
     end
     return nothing
+end
+
+function collect_garbage_with_stats()
+    GC.enable(true)
+    gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
+    reg["gc_num"] = Base.gc_num()
+    println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
+    tNow = time()
+    # Fix: call gc with preceding sleep often results in segfault
+    sleep(1e-2)
+    GC.gc()
+    timing(tNow, "Run garbage collection")
+    GC.enable(false)
 end
 
 # Drives evolve on GPU
 function evolve!(control, ::GPU)
     unlock(control.locks.eulerianComms[comm.jlRank])
-    if reg["iTimeStep"] > 1
+
+    # Evolve Lagrangian phase synchronously during the first time step to
+    # provide reasonable initial sources
+    if reg["iTimeStep"] == 1
+        # Always collect garbage during the first time step
+        wait(control.events.GC_enabled)
+        collect_garbage_with_stats()
+        notify(control.events.GC_finished)
+
+        wait(control.events.U_copied)
+        notify(control.events.Eulerian_computed)
+
+        print("Synchronous time step.  Waiting for tracking and source \
+            copying to finish.\n"
+        )
+        wait(control.events.S_copied)
+        lock(control.locks.eulerianComms[comm.jlRank])
+        notify(control.events.U_locked)
+        return nothing
+    elseif reg["iTimeStep"] > 2
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
     end
+
+    if reg["iTimeStep"] % reg["gcTimeStepInterval"] == 0
+        wait(control.events.GC_enabled)
+        collect_garbage_with_stats()
+        notify(control.events.GC_finished)
+    end
+
     wait(control.events.U_copied)
     lock(control.locks.eulerianComms[comm.jlRank])
     return nothing
+end
+
+# Finishes device kernels and blocks starts of new kernels.  To be run at Julia
+# exit.
+function finalize_evolve()
+    if comm.isMaster
+        println("Saving timings")
+        save_timings(comm, reg)
+    end
+    println("Finalizing Julia program")
+    reg["iTimeStep"] += 1
+    # Acquiring this lock ensures that no kernels are running that would throw
+    # an error when aborted
+    lock(control.locks.chunkTransfers)
+    evolve!(control, executor)
 end
 
 function compute_bounding_box(chunk, executor::GPU)
@@ -1686,34 +1893,21 @@ function evolve_cloud(Δt)
     dtVec = time() - reg["tAllStart"]
     dtEuler = time() - reg["tEulerStart"]
     reg["tAllStart"] = time()
-    # Exclude first time step
     timing(reg["tEulerStart"], "Computed Eulerian phase")
-    if reg["iTimeStep"] > 2
+    # Exclude predefined number of initial time steps
+    if reg["iTimeStep"] > reg["nSkipInitTimeStepsProfiling"]
         reg["tAllTotal"] += dtVec
         reg["tEulerTotal"] += dtEuler
         push!(reg["dtVecAll"], dtVec)
         push!(reg["dtVecEuler"], dtEuler)
     end
-    if  comm.isMaster && reg["iTimeStep"] == reg["nTimeStepsWriteTimings"]
+    if  comm.isMaster && reg["iTimeStep"] > 10
         save_timings(comm, reg)
     end
     print("Time step wall clock time = $(fmt_time(dtVec)) s\n")
     print("Total wall clock time excl. initialization = \
         $(fmt_time(reg["tAllTotal"])) s\n"
     )
-
-    GC.enable(true)
-    reg["timestepsSinceLastGC"] += 1
-    if reg["timestepsSinceLastGC"] >= reg["noGcTimestepInterval"]
-        gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
-        reg["gc_num"] = Base.gc_num()
-        tNow = time()
-        GC.gc()
-        reg["timestepsSinceLastGC"] = 0
-        timing(tNow, "Run garbage collection")
-        println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
-    end
-    GC.enable(false)
 
     if comm.isMaster
         print("Evolve cloud\n")
@@ -1760,14 +1954,12 @@ if comm.size == 1
     decomposition = (1, 1, 1)
 end
 
-reg["noGcTimestepInterval"] = 100
-reg["timestepsSinceLastGC"] = 100
+@show nParticles μᶜ ρᶜ nCellsPerDirection nCells origin ending decomposition
 
 # @SiSc: added some additional output
 @show nParticles nChunksPerDevice nCellsPerDirection nCells
 @show origin ending decomposition
 @show μᶜ ρᶜ ρᵈ g Cₚᶜ Cₚᵈ Dᵈᶜ Mᵈ σᶜ RG SLH
-@show reg["noGcTimestepInterval"]
 
 mesh = construct_mesh(nCellsPerDirection, origin, ending, decomposition)
 tNow = timing(tNow, "Initialized mesh")
@@ -1785,8 +1977,13 @@ reg["eulerian"] = Vector{TwoWayEulerian{VectorField, ScalarField}}(
 )
 tNow = timing(tNow, "Allocated Eulerian ranks array")
 
+# Garbage collection
+reg["gcTimeStepInterval"] = 100
+@show reg["gcTimeStepInterval"]
+
 # Global timers
 reg["iTimeStep"] = 0
+reg["nSkipInitTimeStepsProfiling"] = 2
 
 reg["tAllStart"] = time()
 reg["tAllTotal"] = 0.0
@@ -1801,6 +1998,7 @@ reg["tEvolveTotal"] = 0.0
 reg["dtVecEvolve"] = scalar[]
 
 reg["tDeviceComputeTotal"] = 0.0
+reg["dtVecDeviceCompute"] = scalar[]
 
 # Lock own Eulerian to put async evolve on wait until it's notified by call to
 # evolve_cloud from OF
@@ -1809,6 +2007,16 @@ lock(control.locks.eulerianComms[comm.jlRank])
 if comm.isHost
     nParticlesPerChunk, remainder =
         divrem(nParticles, comm.member.hostCommSize*nChunksPerDevice)
+    if nParticlesPerChunk < 1
+        throw(
+            ErrorException(
+                string(
+                    "Illegiable number of particles per chunk = ",
+                    nParticlesPerChunk
+                )
+            )
+        )
+    end
     nParticles = nParticlesPerChunk*nChunksPerDevice*comm.member.hostCommSize
     if remainder != 0
         println(
@@ -1819,15 +2027,18 @@ if comm.isHost
     end
     @show nParticlesPerChunk
 
-    chunks = Vector{Chunk}(undef, nChunksPerDevice)
-    for i in eachindex(chunks)
-        chunks[i] = allocate_chunk(
-            comm, executor, nParticles,
+    chunks = allocate_chunks(nChunksPerDevice, comm, executor)
+    construct!(chunks, comm, executor, nParticlesPerChunk,
             μᶜ, ρᶜ, ρᵈ, g.x, g.y, g.z, Cₚᶜ, Cₚᵈ, Dᵈᶜ, Mᵈ, σᶜ, RG, SLH
         ) # @SiSc: added additional properties
-        init!(chunks[i], mesh, executor, i)
-    end
-    tNow = timing(tNow, "Initialized particle chunk")
+    initWithHilbert!(chunks, mesh, comm, nParticlesPerChunk, executor)
+
+    # Run GC to free up space after init
+    GC.enable(true)
+    collect_garbage_with_stats()
+    GC.enable(false)
+
+    tNow = timing(tNow, "Initialized particle chunks")
 
     # Write initial state
     # write(chunks, comm, executor)
@@ -1858,6 +2069,11 @@ else
     # Synchronize before starting the evolve thread
     MPI.Barrier(comm.communicator)
 
+    # Run GC to free up space after init
+    GC.enable(true)
+    collect_garbage_with_stats()
+    GC.enable(false)
+
     errormonitor(
         @spawn init_async_evolve!(reg["eulerian"], control, comm, executor)
     )
@@ -1876,6 +2092,9 @@ if isinteractive()
     evolve_cloud(1e-3)
     evolve_cloud(1e-3)
 end
+
+# Run finalization function at Julia exit to let the device finish the kernels
+atexit(finalize_evolve)
 
 gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
 reg["gc_num"] = Base.gc_num()
