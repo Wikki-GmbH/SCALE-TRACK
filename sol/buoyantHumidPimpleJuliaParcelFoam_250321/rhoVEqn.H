@@ -26,6 +26,4 @@
     rhoVEqn.solve("rhoV");
     fvOptions.correct(rhoV);
     rhoV.clamp_min(0);
-
-    rhoVTrans.field() = 0.0;
 }
