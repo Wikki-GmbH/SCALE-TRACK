@@ -33,5 +33,4 @@
     fvOptions.correct(he);
     thermo.correct();
     radiation->correct();
-    hTrans.field() = 0.0;
 }

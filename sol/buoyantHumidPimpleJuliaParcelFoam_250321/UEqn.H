@@ -38,5 +38,3 @@
         fvOptions.correct(U);
         K = 0.5*magSqr(U);
     }
-
-    UTrans.field() = vector::zero;
