@@ -646,7 +646,7 @@ function initWithHilbert!(
         rand!(rng, c.X)
         rand!(rng, c.Y)
         rand!(rng, c.Z)
-        @. c.d = c.d*5e-3SCL + 5e-3SCL
+        @. c.d = c.d*3e-6SCL + 2e-6SCL
 
 
         hStart = round(Int, (startChunk + (i - 1)*lHilbert)/nChunksGlobal)
