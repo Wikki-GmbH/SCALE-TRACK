@@ -1018,7 +1018,10 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, ::GPU)
                     push!(inqRanks, status.source)
                 end
             end
-            MPI.Testall(sreqs)
+            # Testall from MPI.jl allocates, thus call it only if needed.
+            if !isempty(sreqs)
+                MPI.Testall(sreqs)
+            end
             comm_test(breq, barrierFlag)
         end
 
@@ -1224,7 +1227,8 @@ function init_async_evolve!(
             end
             if barrierOn
                 comm_test(breq, barrierFlag)
-            elseif MPI.Testall(sreqs)
+            # Testall from MPI.jl allocates, thus call it only if needed.
+            elseif (!isempty(sreqs) && MPI.Testall(sreqs)) || isempty(sreqs)
                 breq = MPI.Ibarrier(comm.communicator)
                 barrierOn = true
             end
@@ -1439,7 +1443,7 @@ function collect_garbage_with_stats()
     reg["gc_num"] = Base.gc_num()
     println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
     tNow = time()
-    # Fix: call gc with preceding sleep often results in segfault
+    # Fix: call gc with preceding sleep to prevent segfault
     sleep(1e-2)
     GC.gc()
     timing(tNow, "Run garbage collection")
@@ -2008,14 +2012,7 @@ if comm.isHost
     nParticlesPerChunk, remainder =
         divrem(nParticles, comm.member.hostCommSize*nChunksPerDevice)
     if nParticlesPerChunk < 1
-        throw(
-            ErrorException(
-                string(
-                    "Illegiable number of particles per chunk = ",
-                    nParticlesPerChunk
-                )
-            )
-        )
+        error("Illegible number of particles per chunk = $nParticlesPerChunk")
     end
     nParticles = nParticlesPerChunk*nChunksPerDevice*comm.member.hostCommSize
     if remainder != 0
