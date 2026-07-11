@@ -137,7 +137,7 @@ public:
                 field.name().c_str(),
                 field.size(),
                 nCmpts,
-                sizeof(cmptSize)
+                cmptSize
             );
 
         // Store pointer
@@ -168,7 +168,9 @@ public:
         // Copy the data from the OpenFOAM's field to the newly allocated one
         // and swap the pointers
         ul.deepCopy(field.internalField());
-        field.internalFieldRef().swap(ul);
+        // Qualified explicitly: the derived field classes declare their own
+        // swap overloads, which hide the UList one this needs
+        field.internalFieldRef().UList<Type>::swap(ul);
     }
 
     void finalize();
