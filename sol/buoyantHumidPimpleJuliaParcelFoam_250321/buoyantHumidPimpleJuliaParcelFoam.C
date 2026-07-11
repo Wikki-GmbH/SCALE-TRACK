@@ -59,6 +59,7 @@ Author
 #include "fvcSmooth.H"
 #include "UPstream.H"
 #include <typeinfo>
+#include <csignal>
 
 extern "C"
 {
@@ -94,7 +95,6 @@ int main(int argc, char *argv[])
             }
         }
     }
-
     Info<< "Initialising Julia" << endl;
     int jl_argc = 2;
     char** jl_argv = static_cast<char**>(malloc(sizeof(char*)*jl_argc));
@@ -104,7 +104,16 @@ int main(int argc, char *argv[])
     jl_parse_opts(&jl_argc, &jl_argv);
     jl_init();
     Info<< "Initialising Julia - done" << endl;
-    
+
+    // Julia's multi-threaded garbage collector stops the world by making the
+    // running threads fault on a protected safepoint page, which its SIGSEGV
+    // handler recognizes and parks the thread.  Save the handler here:
+    // OpenFOAM's argument parsing and the MPI library install their own
+    // handlers later, which would turn every safepoint hit into a fatal
+    // "segmentation fault".
+    struct sigaction juliaSegvAction;
+    sigaction(SIGSEGV, nullptr, &juliaSegvAction);
+
     argList::addNote
     (
         "Transient solver for buoyant, turbulent fluid flow"
@@ -120,6 +129,11 @@ int main(int argc, char *argv[])
     #include "createDynamicFvMesh.H"
     #include "createDyMControls.H"
     #include "initContinuityErrs.H"
+
+    // argList has installed OpenFOAM's handlers; restore Julia's SIGSEGV
+    // handler before the tracking script is loaded and spawns the Julia tasks.
+    sigaction(SIGSEGV, &juliaSegvAction, nullptr);
+
     #include "createFields.H"
     #include "createFieldRefs.H"
     #include "createRhoUfIfPresent.H"
@@ -191,7 +205,7 @@ int main(int argc, char *argv[])
             << "    energy [J]:        "
             << fvc::domainIntegrate(hTrans/mesh.V()) << nl
             << "    H2O mass [kg]:     "
-            << fvc::domainIntegrate(rhoVTrans) << endl;        
+            << fvc::domainIntegrate(rhoVTrans) << endl;
 
         dimensionedVector integralMomentum = fvc::domainIntegrate(rho*U);
         dimensionedScalar integralEnergy = fvc::domainIntegrate

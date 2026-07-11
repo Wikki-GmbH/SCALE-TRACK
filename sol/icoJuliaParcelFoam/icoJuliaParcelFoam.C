@@ -45,6 +45,7 @@ Author
 #include "pisoControl.H"
 #include "UPstream.H"
 #include <typeinfo>
+#include <csignal>
 
 extern "C"
 {
@@ -91,6 +92,15 @@ int main(int argc, char *argv[])
     jl_init();
     Info<< "Initialising Julia - done" << endl;
 
+    // Julia's multi-threaded garbage collector stops the world by making the
+    // running threads fault on a protected safepoint page, which its SIGSEGV
+    // handler recognizes and parks the thread.  Save the handler here:
+    // OpenFOAM's argument parsing and the MPI library install their own
+    // handlers later, which would turn every safepoint hit into a fatal
+    // "segmentation fault".
+    struct sigaction juliaSegvAction;
+    sigaction(SIGSEGV, nullptr, &juliaSegvAction);
+
     argList::addNote
     (
         "Transient solver for incompressible, laminar flow"
@@ -105,6 +115,10 @@ int main(int argc, char *argv[])
     #include "createMesh.H"
 
     pisoControl piso(mesh);
+
+    // argList has installed OpenFOAM's handlers; restore Julia's SIGSEGV
+    // handler before the tracking script is loaded and spawns the Julia tasks.
+    sigaction(SIGSEGV, &juliaSegvAction, nullptr);
 
     #include "createFields.H"
     #include "initContinuityErrs.H"
