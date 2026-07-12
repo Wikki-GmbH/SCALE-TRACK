@@ -6,8 +6,9 @@
     Copyright (C) 2024-2026 Henrik Rusche
 =#
 
-# Elementary types: numeric shorthands, small vectors, Eulerian and Lagrangian
-# containers, and the executor tags
+# Elementary types: numeric shorthands, small vectors, and the physics-model
+# agnostic containers.  The Eulerian field-set types belong to the physics
+# models.
 
 # A shorthand notation for custom types and multiplication operation for easier
 # introduction of the type primitives into the code
@@ -37,23 +38,8 @@ end
 const VectorField = Vector{ScalarVec}
 Adapt.@adapt_structure VectorField
 
-# The Eulerian fields of one partition coupled in both directions: the carrier
-# velocity U is read by the tracking, the momentum source UTrans is written
-# back to the carrier phase
-struct TwoWayEulerian{T}
-    N::label
-    U::T
-    UTrans::T
-end
-
-function TwoWayEulerian{T}(N) where {T}
-    TwoWayEulerian{T}(
-        N,
-        T(undef, N),
-        T(undef, N)
-    )
-end
-Adapt.@adapt_structure TwoWayEulerian
+const ScalarField = Vector{scalar}
+Adapt.@adapt_structure ScalarField
 
 struct Time
     t::scalar
@@ -71,13 +57,14 @@ end
 
 Adapt.@adapt_structure BoundingBox
 
-# A chunk of particles stored as a structure of arrays.
-# Superscripts: c - carrier phase; d - dispersed phase
-struct Chunk{T, A}
+# A chunk of particles stored as a structure of arrays.  Every model tracks
+# position, velocity and diameter; model-specific per-particle arrays (e.g.
+# the droplet temperature) live in the props named tuple, allocated by the
+# model's parcel_props trait.  nSubSteps is the number of Lagrangian sub-steps
+# per coupling time step.
+struct Chunk{T, A, P}
     N::label
-    μᶜ::scalar
-    ρ::scalar
-    ρᵈByρᶜ::scalar
+    nSubSteps::label
     boundingBox::BoundingBox{T}
     time::A
     d::T
@@ -87,14 +74,13 @@ struct Chunk{T, A}
     U::T
     V::T
     W::T
+    props::P
 end
 
-function Chunk{T, A}(N, μᶜ, ρ, ρᵈByρᶜ) where {T, A}
-    Chunk{T, A}(
+function Chunk{T, A}(N, nSubSteps, props::NamedTuple) where {T, A}
+    Chunk{T, A, typeof(props)}(
         N,
-        μᶜ,
-        ρ,
-        ρᵈByρᶜ,
+        nSubSteps,
         BoundingBox{T}(),
         A(undef, 1),
         T(undef, N),
@@ -103,11 +89,22 @@ function Chunk{T, A}(N, μᶜ, ρ, ρᵈByρᶜ) where {T, A}
         T(undef, N),
         T(undef, N),
         T(undef, N),
-        T(undef, N)
+        T(undef, N),
+        props
     )
 end
 
 Adapt.@adapt_structure Chunk
+
+# The per-particle working state the evolve skeleton advances:
+# position and velocity are universal, the model keeps its extra evolving
+# state (temperature, mass, ...) in the props named tuple.  Immutable — the
+# skeleton and the model hooks advance it functionally.
+struct ParcelState{P}
+    pos::ScalarVec
+    vel::ScalarVec
+    props::P
+end
 
 # Structs used for function tagging to identify on which backend the code is
 # executed
@@ -126,4 +123,23 @@ function copy!(a, b)
         end
     end
     return nothing
+end
+
+# Reset all source-term fields of an Eulerian container to zero
+function reset_sources!(e)
+    for f in source_fields(typeof(e))
+        arr = getfield(e, f)
+        fill!(arr, zero(eltype(arr)))
+    end
+    return nothing
+end
+
+# A task-private view of an Eulerian container: the carrier fields are shared
+# for reading, the source fields are freshly allocated private accumulators
+function task_view(e::E) where {E}
+    E(
+        e.N,
+        (getfield(e, f) for f in carrier_fields(E))...,
+        (similar(getfield(e, f)) for f in source_fields(E))...
+    )
 end

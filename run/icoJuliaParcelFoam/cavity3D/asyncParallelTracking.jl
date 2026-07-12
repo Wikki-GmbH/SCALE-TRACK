@@ -23,21 +23,23 @@ include(joinpath(@__DIR__, "../../../src/scaleTrack/scaleTrack.jl"))
 executor = GPU()
 # executor = CPU()
 
-init_async_tracking!(
-    executor;
-    # nParticles = 800_000_000  # RTX3090
-    # nParticles = 25_000_000  # RTX3090 fast
-    # nParticles = 1_000_000  # RTX3090 faster
-    nParticles = 100_000,  # GT710
-    nChunks = 10,
-
-    # Physical properties in SI units
+# Physical properties in SI units
+physics = StokesFlow(
     μᶜ = 1e-3,  # continuous phase dynamic viscosity
     ρᶜ = 1e3,   # continuous phase density
     ρᵈ = 1.0,   # disperse phase density
     # These properties lead to large velocity source terms
     # μᶜ = 1e3,
     # ρᵈ = 1e8,
+)
+
+init_async_tracking!(
+    executor, physics;
+    # nParticles = 800_000_000  # RTX3090
+    # nParticles = 25_000_000  # RTX3090 fast
+    # nParticles = 1_000_000  # RTX3090 faster
+    nParticles = 100_000,  # GT710
+    nChunks = 10,
 
     # Mesh description; must be consistent with system/blockMeshDict
     nCellsPerDirection = 40,

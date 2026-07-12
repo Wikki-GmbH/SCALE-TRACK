@@ -7,7 +7,7 @@
 =#
 
 # Orchestration primitives for the asynchronous coupling: locks, events and
-# the source-term extrapolator
+# the source-term extrapolators
 
 # Locks and events that help to orchestrate the async tasks and threads
 struct Locks
@@ -32,15 +32,26 @@ end
 
 # Extrapolation of sources
 abstract type AbstractExtrapolator end
-struct ConstExtrapolator <: AbstractExtrapolator
-    prevUTrans::VectorField
+
+# Constant extrapolator: holds one "previous true source" array per source
+# field of the Eulerian container (keyed by field name)
+struct ConstExtrapolator{P} <: AbstractExtrapolator
+    prev::P
 end
 
-function ConstExtrapolator(N::Real)
-    vf = VectorField(undef, N)
-    fill!(vf, ScalarVec(0, 0, 0))
-    ConstExtrapolator(vf)
+function ConstExtrapolator(::Type{E}, N::Real) where {E}
+    prev = NamedTuple{source_fields(E)}(
+        map(source_fields(E)) do f
+            arr = fieldtype(E, f)(undef, N)
+            fill!(arr, zero(eltype(arr)))
+            arr
+        end
+    )
+    ConstExtrapolator(prev)
 end
+
+# No extrapolation: the sources are passed on unmodified
+struct NoExtrapolator <: AbstractExtrapolator end
 
 struct Control{E <: AbstractExtrapolator}
     locks::Locks
@@ -52,9 +63,16 @@ end
 # from the previous time step.  The estimated source from the previous time
 # step is corrected using the true source from the previous time step.
 # estSⁿ = trueSⁿ⁻¹ - estSⁿ⁻¹ + extrapSⁿ, with extrapSⁿ = trueSⁿ⁻¹
-function estimate_source!(currUTrans, extrapolator::ConstExtrapolator)
-    currUTrans .= 2.0.*currUTrans .- extrapolator.prevUTrans
-    for i in eachindex(extrapolator.prevUTrans)
-        @inbounds extrapolator.prevUTrans[i] = currUTrans[i]
+function estimate_source!(eulerian, extrapolator::ConstExtrapolator)
+    for f in keys(extrapolator.prev)
+        curr = getfield(eulerian, f)
+        prev = getfield(extrapolator.prev, f)
+        curr .= 2.0.*curr .- prev
+        for i in eachindex(prev)
+            @inbounds prev[i] = curr[i]
+        end
     end
+    return nothing
 end
+
+estimate_source!(eulerian, ::NoExtrapolator) = nothing

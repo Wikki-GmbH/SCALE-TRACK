@@ -16,23 +16,25 @@
 
 println("Load syncSerialTracking")
 
-# The wp3-refactoring OpenFOAM build is double precision (WM_PRECISION_OPTION=DP)
+# This case is built against a double-precision OpenFOAM (WM_PRECISION_OPTION=DP)
 const scalar = Float64
 const label = Int32
 
 include(joinpath(@__DIR__, "../../../src/scaleTrack/scaleTrack.jl"))
 
 # executor = GPU()
-executor = CPU()  # No GPU on this machine
+executor = CPU()  # this case does not require a GPU
 
-init_sync_tracking!(
-    executor;
-    nParticles = 100_000,
-
-    # Physical properties in SI units
+# Physical properties in SI units
+physics = StokesFlow(
     μᶜ = 1e-3,  # continuous phase dynamic viscosity
     ρᶜ = 1e3,   # continuous phase density
     ρᵈ = 1.0,   # disperse phase density
+)
+
+init_sync_tracking!(
+    executor, physics;
+    nParticles = 100_000,
 
     # Mesh description; must be consistent with system/blockMeshDict
     nCellsPerDirection = 40,

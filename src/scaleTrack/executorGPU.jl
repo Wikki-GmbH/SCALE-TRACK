@@ -16,8 +16,9 @@ end
 
 set_device!(deviceNumber, ::GPU) = CUDA.device!(deviceNumber)
 
-function allocate_chunk(::GPU, constructorArgs...)
-    return Chunk{CuVector{scalar}, CuVector{Time}}(constructorArgs...)
+function allocate_chunk(::GPU, model, N, nSubSteps)
+    T = CuVector{scalar}
+    return Chunk{T, CuVector{Time}}(N, nSubSteps, parcel_props(model, T, N))
 end
 
 function set_time!(chunk, t, Δt, ::GPU)
@@ -33,26 +34,6 @@ end
 # copying to host
 function default_rng(::GPU)
     return CUDA.default_rng()
-end
-
-@inline function update!(
-    eulerian::TwoWayEulerian, state0, velocity, posI, mᵈByρᶜ, ::GPU
-)
-    @inbounds  begin
-        for i=1LBL:3LBL
-            # ScalarVec is immutable and thus its components cannot be mutated
-            # atomically the straightforward way.  Reinterpret the eulerian
-            # field at a location specified by posI with an offset as scalar
-            # and get pointer to it.  Use the pointer to mutate data.
-            scalar_ptr = pointer(
-                reinterpret(scalar, eulerian.UTrans), (posI-1LBL)*3LBL+i
-            )
-            CUDA.atomic_add!(
-                scalar_ptr, mᵈByρᶜ*(state0[i] - velocity[i])
-            )
-        end
-    end
-    return set_parcel_state(eulerian, velocity)
 end
 
 # Find an extremum by comparing the element i of array arr with the value val
@@ -119,14 +100,15 @@ function compute_bounding_box(chunk, executor::GPU)
 end
 
 # Kernel: evolve the particles of a chunk
-function evolve_on_device!(chunk, eulerian, mesh, executor)
+function evolve_on_device!(chunk, model, eulerian, mesh, executor)
     @inbounds begin
-        Δtd = chunk.time[1].Δt / nTrackingSubSteps  # Dispersed-phase time step
+        nSteps = chunk.nSubSteps
+        Δtd = chunk.time[1].Δt / nSteps  # Dispersed-phase time step
         nParticles = chunk.N
         i = (blockIdx().x - 1LBL) * blockDim().x + threadIdx().x
         if(i <= nParticles)
             evolve_particle!(
-                chunk, eulerian, i, Δtd, mesh, nTrackingSubSteps, executor
+                chunk, model, eulerian, i, Δtd, mesh, nSteps, executor
             )
         end
     end
@@ -160,18 +142,16 @@ struct GPUMasterState{C, P, K1, K2}
     blocks::Int
 end
 
-function master_state(chunks, eulerian, mesh, comm, executor::GPU)
+function master_state(chunks, model, eulerian, mesh, comm, executor::GPU)
     CUDA.device!(comm.member.deviceNumber)
     @debugCommPrintln("Hosting device $(CUDA.device())")
 
-    compute = Vector{TwoWayEulerian{CuVector{ScalarVec}}}(undef, comm.size)
+    compute = Vector{device_eulerian_type(model)}(undef, comm.size)
     devicePointers =
-        CuVector{TwoWayEulerian{CuDeviceVector{ScalarVec, 1}}}(
-            undef, comm.size
-        )
+        CuVector{device_eulerian_ptr_type(model)}(undef, comm.size)
     for i in eachindex(compute)
         # Initialize Eulerian fields
-        compute[i] = TwoWayEulerian{CuVector{ScalarVec}}(eulerian[i].N)
+        compute[i] = device_eulerian_type(model)(eulerian[i].N)
         # Get the pointers on the device (cudaconvert) and store them in
         # the pointer container.
         CUDA.@allowscalar devicePointers[i] = cudaconvert(compute[i])
@@ -181,7 +161,7 @@ function master_state(chunks, eulerian, mesh, comm, executor::GPU)
     # Pick any chunk for compilation - only types are important
     aChunk = first(chunks)
     kernel = @cuda launch=false evolve_on_device!(
-        aChunk, devicePointers, mesh, executor
+        aChunk, model, devicePointers, mesh, executor
     )
     config = launch_configuration(kernel.fun)
     threads = min(aChunk.N, config.threads)
@@ -197,12 +177,14 @@ end
 
 function reset_sources!(state::GPUMasterState, ::GPU)
     for de in state.compute
-        fill!(de.UTrans, ScalarVec(0SCL, 0SCL, 0SCL))
+        reset_sources!(de)
     end
     return nothing
 end
 
-function init_bounding_boxes!(chunks, state, mesh, control, comm, executor::GPU)
+function init_bounding_boxes!(
+    chunks, model, state, mesh, control, comm, executor::GPU
+)
     @sync begin
         for chunk in chunks
             @async begin
@@ -226,14 +208,16 @@ function init_bounding_boxes!(chunks, state, mesh, control, comm, executor::GPU)
     return nothing
 end
 
-function evolve_all_chunks!(chunks, state, mesh, control, comm, executor::GPU)
+function evolve_all_chunks!(
+    chunks, model, state, mesh, control, comm, executor::GPU
+)
     @sync begin
         for chunk in chunks
             @async begin
                 hostChunkBb = reset_bounding_box!(chunk, executor)
 
                 state.kernel(
-                    chunk, state.devicePointers, mesh, executor;
+                    chunk, model, state.devicePointers, mesh, executor;
                     threads=state.threads, blocks=state.blocks
                 )
 
@@ -256,11 +240,10 @@ end
 # Synchronous (blocking) evolve used by the sync driver (see
 # init_sync_tracking! in coupling.jl)
 
-function sync_evolve!(chunk, eulerian, mesh, Δt, executor::GPU)
+function sync_evolve!(chunk, model, eulerian, mesh, Δt, executor::GPU)
     if !haskey(reg, "syncDeviceEulerian")
-        de = TwoWayEulerian{CuVector{ScalarVec}}(eulerian.N)
-        dePointer =
-            CuVector{TwoWayEulerian{CuDeviceVector{ScalarVec, 1}}}(undef, 1)
+        de = device_eulerian_type(model)(eulerian.N)
+        dePointer = CuVector{device_eulerian_ptr_type(model)}(undef, 1)
         CUDA.@allowscalar dePointer[1] = cudaconvert(de)
         reg["syncDeviceEulerian"] = de
         reg["syncDeviceEulerianPointer"] = dePointer
@@ -272,13 +255,15 @@ function sync_evolve!(chunk, eulerian, mesh, Δt, executor::GPU)
     increment_time!(chunk, Δt, executor)
 
     kernel = @cuda launch=false evolve_on_device!(
-        chunk, devicePointers, mesh, executor
+        chunk, model, devicePointers, mesh, executor
     )
     config = launch_configuration(kernel.fun)
     threads = min(chunk.N, config.threads)
     blocks = cld(chunk.N, threads)
 
-    CUDA.@sync kernel(chunk, devicePointers, mesh, executor; threads, blocks)
+    CUDA.@sync kernel(
+        chunk, model, devicePointers, mesh, executor; threads, blocks
+    )
 
     copy!(eulerian, deviceEulerian)
     return nothing

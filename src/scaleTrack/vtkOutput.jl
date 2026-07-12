@@ -29,15 +29,28 @@ function write(chunk, ::CPU)
     vtk_grid("dataVTK/particleFields_$(t).vtu", c.X, c.Y, c.Z, cells) do vtk
         vtk["U", VTKPointData()] = transpose(stack([c.U, c.V, c.W]))
         vtk["d", VTKPointData()] = c.d
+        # Model-specific per-particle fields (e.g. the droplet temperature)
+        for (name, arr) in pairs(c.props)
+            vtk[string(name), VTKPointData()] = arr
+        end
         pvd[t] = vtk
     end
     return nothing
 end
 
+# A host-memory chunk with the same layout as the given (device) chunk
+function allocate_host_chunk(c::Chunk)
+    T = Vector{scalar}
+    props = NamedTuple{keys(c.props)}(
+        map(_ -> T(undef, c.N), values(c.props))
+    )
+    return Chunk{T, Vector{Time}}(c.N, c.nSubSteps, props)
+end
+
 function write(chunk, ::GPU)
     c = chunk
     if !(haskey(reg, "hostChunk"))
-        reg["hostChunk"] = allocate_chunk(CPU(), c.N, c.μᶜ, c.ρ, c.ρᵈByρᶜ)
+        reg["hostChunk"] = allocate_host_chunk(c)
     end
     copy!(reg["hostChunk"], c)
     write(reg["hostChunk"], CPU())

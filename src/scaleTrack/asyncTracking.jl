@@ -8,24 +8,19 @@
 
 #=
     Asynchronous tracking orchestration.  The tracking runs in a task spawned
-    at startup (init_async_evolve!) that synchronizes with the OpenFOAM time
-    loop only through the locks and events in Control; evolve!(control,
-    executor) is the counterpart driven from evolve_cloud each time step.
+    at startup that synchronizes with the OpenFOAM time loop only through the
+    locks and events in Control.
 
     Masters and slaves agree on which Eulerian partitions a master needs via
     a non-blocking consensus (NBC) built from point-to-point messages and
-    MPI_Ibarrier.  Message tags: 0 - Eulerian velocity field, 1 - source
-    field, 2 - Eulerian request (inquiry), 3 - acknowledgement of an inquiry.
+    MPI_Ibarrier.  Message tags: 2 - Eulerian request (inquiry), 3 -
+    acknowledgement of an inquiry; the k-th carrier field of the model's
+    Eulerian container travels with tag 10+k, the k-th source field with tag
+    20+k, following the order in which the model lists them.
 
-    The executor-specific pieces of the master loop are provided as hooks by
-    executorCPU.jl and executorGPU.jl:
-
-    - master_state(chunks, eulerian, mesh, comm, executor): backend state
-      (compute copies of the Eulerian fields with a field .compute, kernels,
-      task buffers)
-    - init_bounding_boxes!(chunks, state, mesh, control, comm, executor)
-    - reset_sources!(state, executor)
-    - evolve_all_chunks!(chunks, state, mesh, control, comm, executor)
+    The executor-specific pieces of the master loop -- the backend state, the
+    initial bounding boxes, the source reset and the chunk evolve -- are
+    provided as hooks by the executor.
 =#
 
 # Comm-dispatch helpers: only tracking masters own particle chunks
@@ -57,34 +52,65 @@ function determine!(requiredEulerianRanks, chunkBoundingBox, mesh, control)
     end
 end
 
+# Send the carrier fields of the own partition to every inquiring rank
 function serve_eulerian(inquiringEulerianRanks, eulerian, comm, control)
-    sreqs = Vector{MPI.Request}(undef, length(inquiringEulerianRanks))
-    for (i, inqHost) in enumerate(inquiringEulerianRanks)
+    own = eulerian[comm.jlRank]
+    cf = carrier_fields(typeof(own))
+    sreqs = Vector{MPI.Request}(
+        undef, length(inquiringEulerianRanks)*length(cf)
+    )
+    n = 0
+    for inqHost in inquiringEulerianRanks
         lock(control.locks.eulerianComms[comm.jlRank]) do
-            @debugCommPrintln("Send U to $inqHost")
-            sreqs[i] = MPI.Isend(
-                eulerian[comm.jlRank].U, comm.communicator, dest=inqHost,
-                tag=0
-            )
+            @debugCommPrintln("Send Eulerian to $inqHost")
+            for (k, f) in enumerate(cf)
+                sreqs[n += 1] = MPI.Isend(
+                    getfield(own, f), comm.communicator, dest=inqHost,
+                    tag=10+k
+                )
+            end
         end
     end
     return sreqs
 end
 
+# Post the receives for the source fields sent back by every inquiring rank.
+# Returns the requests and, per inquiring rank, a tuple of receive buffers
+# (one per source field).
 function receive_sources(inquiringEulerianRanks, comm, eulerian)
     inqRanks = inquiringEulerianRanks
-    sourceRreqs = Vector{MPI.Request}(undef, length(inqRanks))
-    sourceBuffers = Vector{VectorField}(undef, length(inqRanks))
-    if !isempty(inqRanks)
-        for (i, inqRank) in enumerate(inqRanks)
-            @debugCommPrintln("Receive source from $inqRank")
-            sourceBuffers[i] = similar(eulerian[comm.jlRank].UTrans)
-            sourceRreqs[i] = MPI.Irecv!(
-                sourceBuffers[i], comm.communicator; source=inqRank, tag=1
+    own = eulerian[comm.jlRank]
+    sf = source_fields(typeof(own))
+    sourceRreqs = Vector{MPI.Request}(undef, length(inqRanks)*length(sf))
+    sourceBuffers = [
+        map(f -> similar(getfield(own, f)), sf) for _ in 1:length(inqRanks)
+    ]
+    n = 0
+    for (i, inqRank) in enumerate(inqRanks)
+        @debugCommPrintln("Receive sources from $inqRank")
+        for (k, f) in enumerate(sf)
+            sourceRreqs[n += 1] = MPI.Irecv!(
+                sourceBuffers[i][k], comm.communicator; source=inqRank,
+                tag=20+k
             )
         end
     end
     return (sourceRreqs, sourceBuffers)
+end
+
+# Wait for the posted source receives and accumulate the buffers into the own
+# partition's source fields
+function accumulate_sources!(eulerian, sourceRreqs, sourceBuffers, comm)
+    own = eulerian[comm.jlRank]
+    sf = source_fields(typeof(own))
+    n = 0
+    for buffers in sourceBuffers
+        for (k, f) in enumerate(sf)
+            comm_wait(sourceRreqs[n += 1])
+            getfield(own, f) .+= buffers[k]
+        end
+    end
+    return nothing
 end
 
 # Answer one pending Eulerian request, if any: receive the empty inquiry
@@ -110,6 +136,7 @@ function probe_eulerian_inquiry!(sreqs, inqRanks, comm, control, probeFlag)
 end
 
 # Eulerian-serving slave loop: pure MPI/event logic, shared by all executors
+# and models
 function init_async_evolve!(eulerian, control, comm::Comm{Slave}, executor)
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
@@ -137,16 +164,13 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, executor)
         sourceRreqs, sourceBuffers = receive_sources(inqRanks, comm, eulerian)
         lock(control.locks.eulerianComms[comm.jlRank]) do
             # The sources of this step are the contributions about to be
-            # received and nothing else, so the fields are cleared before they
-            # are accumulated into.
-            fill!(eulerian[comm.jlRank].UTrans, ScalarVec(0SCL, 0SCL, 0SCL))
-            for (i, req) in enumerate(sourceRreqs)
-                comm_wait(req)
-                eulerian[comm.jlRank].UTrans .+= sourceBuffers[i]
-            end
+            # received and nothing else, so the fields are cleared before
+            # they are accumulated into.
+            reset_sources!(eulerian[comm.jlRank])
+            accumulate_sources!(eulerian, sourceRreqs, sourceBuffers, comm)
         end
 
-        estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
+        estimate_source!(eulerian[comm.jlRank], control.extrapolator)
         empty!(inqRanks)
 
         notify(control.events.S_copied)
@@ -156,17 +180,25 @@ end
 
 # Tracking-master loop.  The executor determines where the chunks are evolved
 # and where the compute copies of the Eulerian fields live (host memory for
-# the CPU, device memory for the GPU); the communication and orchestration
-# logic is identical for all executors.
+# the CPU, device memory for the GPU); the model determines the field set and
+# the particle physics; the communication and orchestration logic is
+# identical for all executors and models.
 function init_async_evolve!(
-    chunks, eulerian, mesh, control, comm::Comm{Master}, executor
+    chunks, model, eulerian, mesh, control, comm::Comm{Master}, executor
 )
-    state = master_state(chunks, eulerian, mesh, comm, executor)
+    state = master_state(chunks, model, eulerian, mesh, comm, executor)
+    E = host_eulerian_type(model)
+    cf = carrier_fields(E)
+    sf = source_fields(E)
+    nCf = length(cf)
+    nSf = length(sf)
 
     # Initialization: bounding boxes of chunks are required before the main
     # loop may be run
     lock(control.locks.chunkTransfers) do
-        init_bounding_boxes!(chunks, state, mesh, control, comm, executor)
+        init_bounding_boxes!(
+            chunks, model, state, mesh, control, comm, executor
+        )
     end
 
     # The infinite loop to be run inside an asynchronous task that is
@@ -184,7 +216,7 @@ function init_async_evolve!(
         reqRanks₁ = Iterators.map(x -> x+1, reqRanks)
         zipIter = zip(1:nRequests, reqRanks, reqRanks₁)
         sreqs = Vector{MPI.Request}(undef, 2*nRequests)
-        rreqs = Vector{MPI.Request}(undef, nRequests)
+        rreqs = Vector{MPI.Request}(undef, nRequests*nCf)
 
         # Buffer is empty since only the source of the message is relevant to
         # the receiver
@@ -196,11 +228,14 @@ function init_async_evolve!(
             bufRef = Ref(41)
             sreqs[nRequests + i] =
                 MPI.Irecv!(MPI.Buffer(bufRef), iRank₀, 3, comm.communicator)
-            # Setup receive for the requested field
+            # Setup receives for the requested carrier fields
             lock(control.locks.eulerianComms[iRank₁])
-            rreqs[i] = MPI.Irecv!(
-                eulerian[iRank₁].U, comm.communicator, source=iRank₀, tag=0
-            )
+            for (k, f) in enumerate(cf)
+                rreqs[(i - 1)*nCf + k] = MPI.Irecv!(
+                    getfield(eulerian[iRank₁], f), comm.communicator,
+                    source=iRank₀, tag=10+k
+                )
+            end
         end
         barrierOn = false
         barrierFlag = Ref{Cint}(0)
@@ -225,16 +260,23 @@ function init_async_evolve!(
         for req in eulerianSreqs comm_wait(req) end
 
         for (i, _, iRank₁) in zipIter
-            comm_wait(rreqs[i])
+            for k in 1:nCf
+                comm_wait(rreqs[(i - 1)*nCf + k])
+            end
             unlock(control.locks.eulerianComms[iRank₁])
         end
 
-        # Copy all required Eulerian to the compute copies
+        # Copy all required Eulerian carrier fields to the compute copies
         allReqRanks₁ =
             Iterators.map(x -> x+1, comm.member.requiredEulerianRanks)
         for iRank₁ in allReqRanks₁
             lock(control.locks.eulerianComms[iRank₁]) do
-                copyto!(state.compute[iRank₁].U, eulerian[iRank₁].U)
+                for f in cf
+                    copyto!(
+                        getfield(state.compute[iRank₁], f),
+                        getfield(eulerian[iRank₁], f)
+                    )
+                end
             end
         end
 
@@ -245,7 +287,9 @@ function init_async_evolve!(
         print("Evolve particles\n")
 
         lock(control.locks.chunkTransfers) do
-            evolve_all_chunks!(chunks, state, mesh, control, comm, executor)
+            evolve_all_chunks!(
+                chunks, model, state, mesh, control, comm, executor
+            )
         end
 
         tEvolve = time() - tStart
@@ -259,40 +303,45 @@ function init_async_evolve!(
 
         # Correct and estimate the source
         lock(control.locks.eulerianComms[comm.jlRank]) do
-            copyto!(
-                eulerian[comm.jlRank].UTrans,
-                state.compute[comm.jlRank].UTrans
-            )
-            estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
+            for f in sf
+                copyto!(
+                    getfield(eulerian[comm.jlRank], f),
+                    getfield(state.compute[comm.jlRank], f)
+                )
+            end
+            estimate_source!(eulerian[comm.jlRank], control.extrapolator)
         end
 
         sourceRreqs, sourceBuffers = receive_sources(inqRanks, comm, eulerian)
 
         # Send the sources to the inquiring ranks
-        sourceSreqs = Vector{MPI.Request}(undef, nRequests)
+        sourceSreqs = Vector{MPI.Request}(undef, nRequests*nSf)
 
         for (i, iRank₀, iRank₁) in zipIter
-            @debugCommPrintln("Send source to $iRank₀")
+            @debugCommPrintln("Send sources to $iRank₀")
             lock(control.locks.eulerianComms[iRank₁])
-            copyto!(
-                eulerian[iRank₁].UTrans, state.compute[iRank₁].UTrans
-            )
-            sourceSreqs[i] = MPI.Isend(
-                eulerian[iRank₁].UTrans, comm.communicator, dest=iRank₀, tag=1
-            )
+            for (k, f) in enumerate(sf)
+                copyto!(
+                    getfield(eulerian[iRank₁], f),
+                    getfield(state.compute[iRank₁], f)
+                )
+                sourceSreqs[(i - 1)*nSf + k] = MPI.Isend(
+                    getfield(eulerian[iRank₁], f), comm.communicator,
+                    dest=iRank₀, tag=20+k
+                )
+            end
         end
 
         for (i, _, iRank₁) in zipIter
-            comm_wait(sourceSreqs[i])
+            for k in 1:nSf
+                comm_wait(sourceSreqs[(i - 1)*nSf + k])
+            end
             unlock(control.locks.eulerianComms[iRank₁])
         end
 
         lock(control.locks.eulerianComms[comm.jlRank]) do
-            for (i, req) in enumerate(sourceRreqs)
-                comm_wait(req)
-                eulerian[comm.jlRank].UTrans .+= sourceBuffers[i]
-            end
-            estimate_source!(eulerian[comm.jlRank].UTrans, control.extrapolator)
+            accumulate_sources!(eulerian, sourceRreqs, sourceBuffers, comm)
+            estimate_source!(eulerian[comm.jlRank], control.extrapolator)
         end
 
         empty!(inqRanks)
