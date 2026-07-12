@@ -67,7 +67,7 @@ volVectorField UTrans
         runTime.timeName(),
         mesh,
         IOobject::NO_READ,
-        IOobject::NO_WRITE
+        IOobject::AUTO_WRITE
     ),
     mesh,
     dimensionedVector(dimVelocity, Zero)

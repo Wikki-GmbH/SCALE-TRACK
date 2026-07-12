@@ -83,11 +83,27 @@ int main(int argc, char *argv[])
     }
 
     Info<< "Initialising Julia" << endl;
-    int jl_argc = 2;
+    int jl_argc = 3;
     char** jl_argv = static_cast<char**>(malloc(sizeof(char*)*jl_argc));
     jl_argv[0] = argv[0];
-    string threadsOpt = "--threads=2";
+    // 1,1: an interactive thread for OpenFOAM and a default thread for Julia.
+    // jl_parse_opts ignores the JULIA_NUM_THREADS environment variable, so
+    // forward it here to enable multi-threaded particle tracking on the CPU.
+    string threadsOpt = "--threads=1,1";
+    const string nJlThreads(getEnv("JULIA_NUM_THREADS"));
+    if (!nJlThreads.empty())
+    {
+        threadsOpt = "--threads=" + nJlThreads + ",1";
+    }
+    // "@." walks up from the working directory (the case directory) until it
+    // finds a Project.toml, so a case picks up the shared environment at the
+    // repository root, or its own Project.toml if it carries one.
+    // JULIA_PROJECT wins, for running against an environment elsewhere.
+    const string jlProject(getEnv("JULIA_PROJECT"));
+    string projectOpt =
+        "--project=" + (jlProject.empty() ? string("@.") : jlProject);
     jl_argv[1] = const_cast<char*>(threadsOpt.c_str());
+    jl_argv[2] = const_cast<char*>(projectOpt.c_str());
     jl_parse_opts(&jl_argc, &jl_argv);
     jl_init();
     Info<< "Initialising Julia - done" << endl;
@@ -192,9 +208,8 @@ int main(int argc, char *argv[])
             }
 
             #include "continuityErrs.H"
-            // Assignment to tmp leads to data reallocation, use deepCopy
-            // instead
-            // U = HbyA - rAU*fvc::grad(p);
+            // Assignment would reallocate the field's storage, which the
+            // zero-copy sharing with the tracking forbids -- copy into it
             U.deepCopy(HbyA - rAU*fvc::grad(p));
             U.correctBoundaryConditions();
         }
