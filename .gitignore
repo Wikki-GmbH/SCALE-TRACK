@@ -81,3 +81,8 @@ doc/Doxygen/DTAGS
 
 # Ignore the test directory
 /tutorialsTest
+
+# Machine-specific Julia preferences (MPIPreferences, CUDA_Runtime_jll).
+# The shared environment's Project.toml/Manifest.toml ARE tracked; this is
+# generated per machine by MPIPreferences.use_system_binary().
+LocalPreferences.toml

@@ -1,0 +1,63 @@
+# Shared Julia environment for the whole repository.
+# (Deliberately no name/uuid: this is an environment, not a package.)
+#
+# The solvers boot the embedded runtime with `--project=@.`, which walks up
+# from the case directory until it finds a Project.toml -- so every case under
+# run/ and test/ picks this file up automatically.  A case that genuinely
+# needs different versions can override it simply by carrying its own
+# Project.toml; JULIA_PROJECT overrides both.
+#
+# Instantiate once, from the repository root:
+#     julia --project=. -e 'using Pkg; Pkg.instantiate()'
+#     julia --project=. -e 'using MPIPreferences; MPIPreferences.use_system_binary()'
+#
+# MPI.jl must be pointed at the same system MPI that OpenFOAM was built with,
+# which is what the MPIPreferences call above does (it writes
+# LocalPreferences.toml next to this file; that file is machine specific and
+# is not committed).
+#
+# NOTE: keep this file's comments -- `Pkg.add` rewrites the file and strips
+# them, so restore them after any Pkg operation.
+
+[deps]
+AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
+Accessors = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+MPIPreferences = "3da0fdf6-3ccc-4f1b-acd9-58baa6c99267"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
+
+# Both GPU vendors are listed, but only one is ever loaded: scaleTrack.jl does
+# `using CUDA` or `using AMDGPU` according to gpuBackend, so a machine only
+# needs its own vendor to work.  Installing both is the price of a single
+# shared environment -- and note that precompiling CUDA on a machine with no
+# NVIDIA runtime poisons its cache (CUDA.jl declares __precompile__(false)
+# there), so precompile per vendor rather than the whole environment.
+#
+# Deliberately loose bounds: the exact "=" pins this replaces could not be
+# satisfied on newer machines, and pinning without a committed Manifest.toml
+# constrained nothing anyway (transitive dependencies were free to drift).
+# Reproducibility comes from the committed Manifest.toml next to this file;
+# these bounds only fence off known-incompatible majors.
+#
+# NOTE on syntax: a comma is a UNION, not an intersection.  ">= 5.4, < 7"
+# means "any version at all" -- use the union-of-carets form below instead.
+[compat]
+julia = "1.10"
+AMDGPU = "2"               # 2.7 is what the ROCm backend was written against
+Accessors = "0.1"
+Adapt = "4"
+Atomix = "0.1, 1"          # transitive only (via CUDA/KernelAbstractions)
+BenchmarkTools = "1"
+CUDA = "5.4, 6"            # 5.4.x works on CUDA <= 12 drivers; 6.x is
+                           # required on CUDA 13 drivers (Ampere/A100 hosts
+                           # shipping driver 580+ reject 5.x outright)
+MPI = "0.20"
+MPIPreferences = "0.1"
+StaticArrays = "1"
+WriteVTK = "1"
