@@ -1,8 +1,7 @@
 #=
     SCALE-TRACK
 
-    Copyright (C) 2024-2026 Sergey Lesnik
-    Copyright (C) 2024-2026 Henrik Rusche
+    Copyright (C) 2026 Sergey Lesnik
 
     This file is part of SCALE-TRACK, which is free software: you can
     redistribute it and/or modify it under the terms of the GNU General
@@ -11,33 +10,28 @@
     See <http://www.gnu.org/licenses/> for details.
 =#
 
-# Case setup for the asynchronous particle tracking in the cavity3D case.
-# All tracking code lives in the library; this script only
-# sets the case parameters.
+# Case setup for the asynchronous particle tracking in the cavity3D test
+# case.  All tracking code lives in the library; this script
+# only sets the case parameters.
 
-# The solver is built single precision (WM_PRECISION_OPTION=SP), which is the
-# library default: scalar = Float32, label = Int32
+# The wp3-refactoring OpenFOAM build is double precision (WM_PRECISION_OPTION=DP)
+const scalar = Float64
+const label = Int32
 
 include(joinpath(@__DIR__, "../../../src/scaleTrack/scaleTrack.jl"))
 
-executor = GPU()
-# executor = CPU()
+# executor = GPU()
+executor = CPU()  # No GPU on this machine
 
 init_async_tracking!(
     executor;
-    # nParticles = 800_000_000  # RTX3090
-    # nParticles = 25_000_000  # RTX3090 fast
-    # nParticles = 1_000_000  # RTX3090 faster
-    nParticles = 100_000,  # GT710
+    nParticles = 100_000,
     nChunks = 10,
 
     # Physical properties in SI units
     μᶜ = 1e-3,  # continuous phase dynamic viscosity
     ρᶜ = 1e3,   # continuous phase density
     ρᵈ = 1.0,   # disperse phase density
-    # These properties lead to large velocity source terms
-    # μᶜ = 1e3,
-    # ρᵈ = 1e8,
 
     # Mesh description; must be consistent with system/blockMeshDict
     nCellsPerDirection = 40,
@@ -49,7 +43,9 @@ init_async_tracking!(
     # ranks and must evenly divide the cell counts.
     decompositions = Dict(
         1 => (1, 1, 1),
-        20 => (2, 2, 5)
+        2 => (1, 1, 2),
+        4 => (1, 2, 2),
+        8 => (2, 2, 2)
     ),
 
     gcTimeStepInterval = 100,

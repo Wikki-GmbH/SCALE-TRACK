@@ -2,7 +2,6 @@
     SCALE-TRACK
 
     Copyright (C) 2024-2026 Sergey Lesnik
-    Copyright (C) 2024-2026 Henrik Rusche
 
     This file is part of SCALE-TRACK, which is free software: you can
     redistribute it and/or modify it under the terms of the GNU General
@@ -11,19 +10,20 @@
     See <http://www.gnu.org/licenses/> for details.
 =#
 
-# Case setup for the synchronous single-rank tracking in the cavity3D case.
-# All tracking code lives in the library; this script only
-# sets the case parameters.
+# Case setup for the synchronous single-rank tracking in the cavity3D test
+# case.  All tracking code lives in the library; this script only sets the
+# case parameters.
 
 println("Load syncSerialTracking")
 
-# The solver is built single precision (WM_PRECISION_OPTION=SP), which is the
-# library default: scalar = Float32, label = Int32
+# The wp3-refactoring OpenFOAM build is double precision (WM_PRECISION_OPTION=DP)
+const scalar = Float64
+const label = Int32
 
 include(joinpath(@__DIR__, "../../../src/scaleTrack/scaleTrack.jl"))
 
-executor = GPU()
-# executor = CPU()
+# executor = GPU()
+executor = CPU()  # No GPU on this machine
 
 init_sync_tracking!(
     executor;
@@ -35,7 +35,7 @@ init_sync_tracking!(
     ρᵈ = 1.0,   # disperse phase density
 
     # Mesh description; must be consistent with system/blockMeshDict
-    nCellsPerDirection = 20,
+    nCellsPerDirection = 40,
     origin = 0.0,
     ending = 1.0,
 )
