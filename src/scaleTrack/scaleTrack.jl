@@ -31,8 +31,8 @@
     Entry point of the SCALE-TRACK particle tracking library.
 
     The library is include-based: a case script includes this file into Main,
-    constructs a physics model -- StokesFlow -- and calls one of the two
-    drivers,
+    constructs a physics model -- StokesFlow or HumidAirDroplet -- and calls
+    one of the two drivers,
 
         init_async_tracking!(executor, model; caseParameters...)
         init_sync_tracking!(executor, model; caseParameters...)
@@ -88,6 +88,7 @@ include("control.jl")
 include("comm.jl")
 include("particles.jl")
 include("stokesFlow.jl")
+include("humidAir.jl")
 include("executorCPU.jl")
 include("executorGPU.jl")
 include("asyncTracking.jl")

@@ -10,7 +10,7 @@
     Case- and C++-facing API.
 
     A case script includes scaleTrack.jl, constructs a physics model
-    (StokesFlow) and calls one of the two drivers:
+    (StokesFlow or HumidAirDroplet) and calls one of the two drivers:
 
     - init_async_tracking!(executor, model; ...): the production coupling.
       The tracking runs asynchronously with respect to the OpenFOAM time
@@ -344,8 +344,9 @@ end
 # Standalone helpers (running without OpenFOAM, e.g. in a REPL)
 
 # Fill the carrier velocity fields with seeded random data.  Models with
-# additional carrier fields need those initialized to physically sensible
-# ranges by the caller.
+# additional carrier fields (temperature, vapour density) need those
+# initialized to physically sensible ranges by the caller — see the humid
+# regression test for an example.
 function randomize_velocity!()
     e = reg["eulerian"]
     if e isa Vector
