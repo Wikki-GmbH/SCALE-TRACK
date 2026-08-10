@@ -11,13 +11,10 @@
     See <http://www.gnu.org/licenses/> for details.
 =#
 
-# Case setup for the asynchronous particle tracking in the
-# freeFallCoolingEvaporation case: water droplets with heat and mass transfer
-# (HumidAirDroplet physics).  All tracking code lives in the library; this
-# script and the case parameters beside it are the whole of the case setup.
-
-# The solver is built single precision (WM_PRECISION_OPTION=SP), which is the
 # library default: scalar = Float32, label = Int32
+
+# Report the parcel state every coupling step, as the reference cloud does
+const CloudLogFrequency = 1
 
 include(joinpath(@__DIR__, "../../../src/scaleTrack/scaleTrack.jl"))
 
@@ -33,20 +30,18 @@ init_async_tracking!(
     nCellsPerDirection, origin, ending,
     nSubSteps,
 
-    # Lagrangian decomposition by rank count; must evenly divide the cell
-    # counts.  (The pre-library script used (2, 1, 1) for any parallel run,
-    # which is inconsistent with the 1x1x10 mesh.)
-    decompositions = Dict(
-        1 => (1, 1, 1),
-        2 => (1, 1, 2)
-    ),
+    # A single cell admits only the trivial decomposition
+    decompositions = Dict(1 => (1, 1, 1)),
 
-    gcTimeStepInterval = 20,
+    # Hold the previous true source between coupling steps, which is what the
+    # synchronous reference solver this case is compared against does
+    extrapolator = ConstExtrapolator,
+
+    gcTimeStepInterval = 100,
     initChunk! = init_droplets!,
 )
 
-# Test a few time steps when running in a REPL.  The velocity field is
-# randomized; temperature and vapour density must be set to sensible ranges.
+# Test a few time steps when running in a REPL
 if isinteractive()
     for i in eachindex(reg["eulerian"])
         # Slaves allocate only their own partition

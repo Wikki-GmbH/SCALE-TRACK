@@ -104,9 +104,9 @@ function evolve_on_device!(chunk, model, eulerian, mesh, executor)
     @inbounds begin
         nSteps = chunk.nSubSteps
         Δtd = chunk.time[1].Δt / nSteps  # Dispersed-phase time step
-        nParticles = chunk.N
+        nParcels = chunk.N
         i = (blockIdx().x - 1LBL) * blockDim().x + threadIdx().x
-        if(i <= nParticles)
+        if(i <= nParcels)
             evolve_particle!(
                 chunk, model, eulerian, i, Δtd, mesh, nSteps, executor
             )

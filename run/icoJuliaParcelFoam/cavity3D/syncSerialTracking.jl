@@ -34,7 +34,7 @@ physics = StokesFlow(
 
 init_sync_tracking!(
     executor, physics;
-    nParticles = 100_000,
+    nParcels = 100_000,
 
     # Mesh description; must be consistent with system/blockMeshDict
     nCellsPerDirection = 20,

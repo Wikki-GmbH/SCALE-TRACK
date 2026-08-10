@@ -40,13 +40,15 @@ struct HumidAirDroplet{EV}
     σᶜ::scalar      # surface tension of water in air
     RG::scalar      # gas constant
     SLH::scalar     # specific latent heat of water vaporisation
+    nParticle::scalar   # physical particles represented by one tracked parcel
 end
 
 function HumidAirDroplet(
-    evaporation; μᶜ, ρᶜ, ρᵈ, g, Cₚᶜ, Cₚᵈ, Dᵈᶜ, Mᵈ, σᶜ, RG, SLH
+    evaporation; μᶜ, ρᶜ, ρᵈ, g, Cₚᶜ, Cₚᵈ, Dᵈᶜ, Mᵈ, σᶜ, RG, SLH, nParticle = 1
 )
     HumidAirDroplet{typeof(evaporation)}(
-        μᶜ, ρᶜ, ρᵈ, ScalarVec(g...), Cₚᶜ, Cₚᵈ, Dᵈᶜ, Mᵈ, σᶜ, RG, SLH
+        μᶜ, ρᶜ, ρᵈ, ScalarVec(g...), Cₚᶜ, Cₚᵈ, Dᵈᶜ, Mᵈ, σᶜ, RG, SLH,
+        nParticle
     )
 end
 
@@ -90,6 +92,9 @@ parcel_props(::HumidAirDroplet, ::Type{T}, N) where {T} = (T = T(undef, N),)
 
 # The source extrapolation is disabled in the ported physics (see the header)
 default_extrapolator(::HumidAirDroplet, N) = NoExtrapolator()
+
+# Disperse-phase density, for the linear momentum of the cloud summary
+parcel_density(model::HumidAirDroplet) = model.ρᵈ
 
 @inline function load_parcel(model::HumidAirDroplet, c, i)
     @inbounds begin
@@ -299,22 +304,27 @@ end
 @inline bounce_source(::HumidAirDroplet, acc, velocity, componentI) = acc
 
 @inline function flush_sources!(
-    ::HumidAirDroplet, eulerian, acc, parcel, posI, ::CPU
+    model::HumidAirDroplet, eulerian, acc, parcel, posI, ::CPU
 )
+    # One parcel stands for nParticle physical particles; only the source to
+    # the carrier is weighted, the parcel state is not
+    w = model.nParticle
+
     # momentum transfer
-    @inbounds eulerian.UTrans[posI] += acc.dUTrans
+    @inbounds eulerian.UTrans[posI] += w*acc.dUTrans
 
     # thermal energy transfer
-    @inbounds eulerian.hTrans[posI] += acc.dhTrans
+    @inbounds eulerian.hTrans[posI] += w*acc.dhTrans
 
     # mass transfer
-    @inbounds eulerian.rhoVTrans[posI] += acc.drhoVTrans
+    @inbounds eulerian.rhoVTrans[posI] += w*acc.drhoVTrans
     return (dUTrans = ScalarVec(0, 0, 0), dhTrans = 0SCL, drhoVTrans = 0SCL)
 end
 
 @inline function flush_sources!(
-    ::HumidAirDroplet, eulerian, acc, parcel, posI, ::GPU
+    model::HumidAirDroplet, eulerian, acc, parcel, posI, ::GPU
 )
+    w = model.nParticle
     @inbounds begin
         # momentum transfer
         for i=1LBL:3LBL
@@ -324,7 +334,7 @@ end
                 reinterpret(scalar, eulerian.UTrans), (posI-1LBL)*3LBL+i
             )
             CUDA.atomic_add!(
-                scalar_ptr, (acc.dUTrans[i])
+                scalar_ptr, (w*acc.dUTrans[i])
             )
         end
 
@@ -332,13 +342,13 @@ end
         scalar_ptr = pointer(
             reinterpret(scalar, eulerian.hTrans), posI
         )
-        CUDA.atomic_add!(scalar_ptr, (acc.dhTrans))
+        CUDA.atomic_add!(scalar_ptr, (w*acc.dhTrans))
 
         # mass transfer
         scalar_ptr = pointer(
             reinterpret(scalar, eulerian.rhoVTrans), posI
         )
-        CUDA.atomic_add!(scalar_ptr, (acc.drhoVTrans))
+        CUDA.atomic_add!(scalar_ptr, (w*acc.drhoVTrans))
     end
     return (dUTrans = ScalarVec(0, 0, 0), dhTrans = 0SCL, drhoVTrans = 0SCL)
 end

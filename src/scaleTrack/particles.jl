@@ -143,3 +143,55 @@ end
     end
     return nothing
 end
+
+###############################################################################
+# Cloud summary: the counterpart of an OpenFOAM cloud's info(), reporting the
+# parcel state after a coupling step.  Reached only through @cloudSummary, so
+# nothing below is compiled into a run that leaves the summary off.
+
+# parcel_density (the disperse-phase density used for the reported linear
+# momentum) is defined by each model in its own file.
+
+# Names of the model's per-parcel property arrays, needed on ranks that hold
+# no chunks to build a matching reduction buffer
+prop_names(model) = keys(parcel_props(model, Vector{scalar}, 0))
+
+# Local extrema and momentum of one chunk.  The momentum reduction fuses into
+# one broadcast, so it costs a single temporary of the chunk's length -- one
+# of the reasons the summary is opt-in and rate limited.
+function chunk_summary(chunk, model)
+    c = chunk
+    dMin, dMax = extrema(c.d)
+    momentum = parcel_density(model)*π/6*sum(c.d.^3 .* c.W)
+    props = map(a -> extrema(a), values(c.props))
+    return (N = Int(c.N), dMin = dMin, dMax = dMax, momentum = momentum,
+            props = props)
+end
+
+# Combine the per-chunk summaries of this rank
+function combine_summaries(summaries)
+    first = summaries[1]
+    N = sum(s -> s.N, summaries)
+    dMin = minimum(s -> s.dMin, summaries)
+    dMax = maximum(s -> s.dMax, summaries)
+    momentum = sum(s -> s.momentum, summaries)
+    props = ntuple(length(first.props)) do i
+        (minimum(s -> s.props[i][1], summaries),
+         maximum(s -> s.props[i][2], summaries))
+    end
+    return (N = N, dMin = dMin, dMax = dMax, momentum = momentum, props = props)
+end
+
+# Print in the layout of an OpenFOAM cloud info() block
+function print_cloud_summary(s, propNames)
+    println("Cloud summary")
+    println("    Current number of parcels   = ", s.N)
+    println("    Diameter min/max            = ", s.dMin, ", ", s.dMax)
+    for (name, ex) in zip(propNames, s.props)
+        println("    ", rpad(string(name), 8), " min/max            = ",
+                ex[1], ", ", ex[2])
+    end
+    println("    Linear momentum z           = ", s.momentum)
+    flush(stdout)
+    return nothing
+end

@@ -35,10 +35,10 @@ physics = StokesFlow(
 
 init_async_tracking!(
     executor, physics;
-    # nParticles = 800_000_000  # RTX3090
-    # nParticles = 25_000_000  # RTX3090 fast
-    # nParticles = 1_000_000  # RTX3090 faster
-    nParticles = 100_000,  # GT710
+    # nParcels = 800_000_000  # RTX3090
+    # nParcels = 25_000_000  # RTX3090 fast
+    # nParcels = 1_000_000  # RTX3090 faster
+    nParcels = 100_000,  # GT710
     nChunks = 10,
 
     # Mesh description; must be consistent with system/blockMeshDict

@@ -107,8 +107,66 @@ function trigger_gc_if_due!()
     return nothing
 end
 
+# Report the parcel state of the whole cloud.  Every rank contributes -- those
+# without chunks contribute neutral elements -- and the reduced values are
+# printed once, so the numbers are comparable with the reference cloud's.
+@cloudSummary function report_cloud_summary(::AsyncMode)
+    names = prop_names(model)
+    nP = length(names)
+
+    sums = zeros(Float64, 2)            # parcel count, linear momentum
+    mins = fill(Inf, 1 + nP)            # diameter, then the model's props
+    maxs = fill(-Inf, 1 + nP)
+
+    if comm.isHost
+        s = combine_summaries([chunk_summary(c, model) for c in chunks])
+        sums[1] = s.N
+        sums[2] = s.momentum
+        mins[1] = s.dMin
+        maxs[1] = s.dMax
+        for i in 1:nP
+            mins[1 + i] = s.props[i][1]
+            maxs[1 + i] = s.props[i][2]
+        end
+    end
+
+    MPI.Allreduce!(sums, MPI.SUM, comm.communicator)
+    MPI.Allreduce!(mins, MPI.MIN, comm.communicator)
+    MPI.Allreduce!(maxs, MPI.MAX, comm.communicator)
+
+    comm.isMaster || return nothing
+    print_cloud_summary(
+        (
+            N = round(Int, sums[1]),
+            dMin = mins[1],
+            dMax = maxs[1],
+            momentum = sums[2],
+            props = ntuple(i -> (mins[1 + i], maxs[1 + i]), nP),
+        ),
+        names
+    )
+    return nothing
+end
+
+@cloudSummary function report_cloud_summary(::SyncMode)
+    print_cloud_summary(chunk_summary(chunk, model), keys(chunk.props))
+    return nothing
+end
+
 function evolve_cloud(Δt, ::AsyncMode)
     trigger_gc_if_due!()
+
+    # Reported before the next evolve is unblocked, which is where the chunks
+    # are settled: they then hold the state of the previous coupling step, so
+    # the step just completed is the one indexed here.  The report still
+    # trails a synchronous reference by the one step the coupling is
+    # asynchronous by.
+    @cloudSummary begin
+        reg["timeStep"] += 1
+        completed = reg["timeStep"] - 1
+        completed > 0 && cloud_summary_due(completed) &&
+            report_cloud_summary(AsyncMode())
+    end
 
     if comm.isMaster
         print("Evolve cloud\n")
@@ -132,6 +190,11 @@ function evolve_cloud(Δt, ::SyncMode)
     reset_sources!(reg["eulerian"])
 
     sync_evolve!(chunk, model, reg["eulerian"], mesh, Δt, executor)
+
+    @cloudSummary begin
+        reg["timeStep"] += 1
+        cloud_summary_due(reg["timeStep"]) && report_cloud_summary(SyncMode())
+    end
 
     tEvolve = time() - tNow
     if !firstPass
@@ -192,7 +255,7 @@ end
 =#
 function init_async_tracking!(
     executorArg, modelArg;
-    nParticles,
+    nParcels,
     nChunks,
     nCellsPerDirection, origin, ending,
     decompositions,
@@ -227,9 +290,10 @@ function init_async_tracking!(
 
     reg["gcTimeStepInterval"] = gcTimeStepInterval
     reg["timestepsSinceLastGC"] = 0
+    reg["timeStep"] = 0
 
     @show model
-    @show nParticles nChunks nCellsPerDirection origin ending
+    @show nParcels nChunks nCellsPerDirection origin ending
     @show decomposition nSubSteps gcTimeStepInterval
 
     global mesh = construct_mesh(
@@ -241,10 +305,7 @@ function init_async_tracking!(
     global control = Control(
         Locks(comm.size),
         Events(),
-        something(
-            extrapolator,
-            default_extrapolator(model, prod(mesh.partitionN))
-        )
+        make_extrapolator(extrapolator, model, prod(mesh.partitionN))
     )
     tNow = timing(tNow, "Initialized control")
 
@@ -265,7 +326,7 @@ function init_async_tracking!(
         global chunks = Vector{Chunk}(undef, nChunks)
         for i in eachindex(chunks)
             chunks[i] =
-                allocate_chunk(comm, executor, model, nParticles, nSubSteps)
+                allocate_chunk(comm, executor, model, nParcels, nSubSteps)
             initChunk!(chunks[i], mesh, executor, i)
         end
         tNow = timing(tNow, "Initialized particle chunks")
@@ -301,7 +362,7 @@ end
 =#
 function init_sync_tracking!(
     executorArg, modelArg;
-    nParticles,
+    nParcels,
     nCellsPerDirection, origin, ending,
     nSubSteps = 10,
     initChunk! = init!,
@@ -315,14 +376,14 @@ function init_sync_tracking!(
     tNow = time()
 
     @show model
-    @show nParticles nCellsPerDirection origin ending nSubSteps
+    @show nParcels nCellsPerDirection origin ending nSubSteps
 
     global mesh = construct_mesh(
         expand3(nCellsPerDirection), expand3(origin), expand3(ending),
         (1, 1, 1)
     )
 
-    global chunk = allocate_chunk(executor, model, nParticles, nSubSteps)
+    global chunk = allocate_chunk(executor, model, nParcels, nSubSteps)
     tNow = timing(tNow, "Allocated particle chunk")
     initChunk!(chunk, mesh, executor)
     tNow = timing(tNow, "Initialized particle chunk")
@@ -333,6 +394,7 @@ function init_sync_tracking!(
 
     reg["eulerian"] = host_eulerian_type(model)(Int(prod(mesh.N)))
 
+    reg["timeStep"] = 0
     global totalTime = 0.0
     global firstPass = true
 

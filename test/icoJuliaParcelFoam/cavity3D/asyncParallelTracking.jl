@@ -32,7 +32,7 @@ physics = StokesFlow(
 
 init_async_tracking!(
     executor, physics;
-    nParticles = 100_000,
+    nParcels = 100_000,
     nChunks = 10,
 
     # Mesh description; must be consistent with system/blockMeshDict

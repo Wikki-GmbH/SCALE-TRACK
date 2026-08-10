@@ -58,6 +58,9 @@ parcel_props(::StokesFlow, ::Type{T}, N) where {T} = (;)
 default_extrapolator(model::StokesFlow, N) =
     ConstExtrapolator(host_eulerian_type(model), N)
 
+# Disperse-phase density, for the linear momentum of the cloud summary
+parcel_density(model::StokesFlow) = model.ρᵈ
+
 @inline function load_parcel(model::StokesFlow, c, i)
     @inbounds begin
         ⌀ = c.d[i]

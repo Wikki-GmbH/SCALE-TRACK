@@ -12,17 +12,21 @@
     See <http://www.gnu.org/licenses/> for details.
 =#
 
-# Case parameters of freeFallCoolingEvaporation, shared by the coupled setup
-# (asyncParallelTracking.jl) and the regression test (testHumidTracking.jl).
-# The library (src/scaleTrack) must be included before this file.
+# Case parameters of singleCellCooling.  The library must be included before
+# this file.
+#
+# One droplet in one cell, cooling by convection alone: evaporation is off, so
+# the droplet mass is constant and the only source to the carrier is the
+# convective heat.  Allrun runs the OpenFOAM reference solver on the same case
+# and greps both temperatures for comparison.
 
 # Physical properties in SI units
 physics = HumidAirDroplet(
-    Evaporation();
+    NoEvaporation();
     μᶜ = 1.8e-5,            # continuous phase dynamic viscosity
     ρᶜ = 1.2,               # continuous phase density
     ρᵈ = 1000.0,            # disperse phase density
-    g = (0, 0, -9.81),      # gravitational acceleration
+    g = (0, 0, 0),          # gravitational acceleration
     Cₚᶜ = 1000,             # specific heat capacity of air
     Cₚᵈ = 4200,             # specific heat capacity of water
     Dᵈᶜ = 24.5e-6,          # diffusivity coefficient of water vapour in air
@@ -30,32 +34,34 @@ physics = HumidAirDroplet(
     σᶜ = 72.8e-3,           # surface tension of water in air
     RG = 8.3144598,         # gas constant
     SLH = 2264.71,          # specific latent heat of water vaporisation
+
+    # One tracked parcel stands for nParticle physical droplets; must match
+    # nParticle of the injection model in constant/cloudCloudProperties
+    nParticle = 100,
 )
 
-nParcels = 10000
+nParcels = 1
 nChunks = 1
-nSubSteps = 100
+nSubSteps = 10
 
 # Mesh description; must be consistent with system/blockMeshDict
-nCellsPerDirection = [1, 1, 10]
+nCellsPerDirection = [1, 1, 1]
 origin = [0.0, 0.0, 0.0]
-ending = [0.1, 0.1, 10.0]
+ending = [0.01, 0.01, 0.01]
 
-# Droplets released in the top 10% of the column with uniform diameter and
-# temperature
+# The single droplet sits at the cell centre and does not move: with no
+# gravity and a carrier at rest the slip velocity stays zero, so drag
+# transfers no momentum
 function init_droplets!(chunk, mesh, executor, randSeed=19891)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 
-    rng = default_rng(executor)
-    Random.seed!(rng, randSeed)
     fill!(c.boundingBox.min, 0.0)
     fill!(c.boundingBox.max, 0.0)
-    rand!(rng, c.Z)
     fill!(c.X, 0.5SCL*mesh.L.x + mesh.origin.x)
     fill!(c.Y, 0.5SCL*mesh.L.y + mesh.origin.y)
-    @. c.Z = 0.1SCL*c.Z*mesh.L.z + mesh.origin.z+ 0.9SCL*mesh.L.z
-    fill!(c.d, 500e-6SCL)
+    fill!(c.Z, 0.5SCL*mesh.L.z + mesh.origin.z)
+    fill!(c.d, 50e-6SCL)
     fill!(c.props.T, 296.15SCL)
     fill!(c.U, 0.0)
     fill!(c.V, 0.0)

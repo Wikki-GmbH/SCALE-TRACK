@@ -76,3 +76,13 @@ function estimate_source!(eulerian, extrapolator::ConstExtrapolator)
 end
 
 estimate_source!(eulerian, ::NoExtrapolator) = nothing
+
+# Resolve the extrapolator a case asked for.  Accepted are nothing (use the
+# model's default), a ready instance, or a type to be constructed for this
+# model and partition size -- the last lets a case select an extrapolator
+# without knowing the partition size.
+make_extrapolator(::Nothing, model, N) = default_extrapolator(model, N)
+make_extrapolator(e::AbstractExtrapolator, model, N) = e
+make_extrapolator(::Type{NoExtrapolator}, model, N) = NoExtrapolator()
+make_extrapolator(::Type{E}, model, N) where {E <: AbstractExtrapolator} =
+    E(host_eulerian_type(model), N)

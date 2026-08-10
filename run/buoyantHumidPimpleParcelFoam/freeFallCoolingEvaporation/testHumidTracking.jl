@@ -32,7 +32,7 @@ include(joinpath(@__DIR__, "caseSetup.jl"))
 
 init_sync_tracking!(
     executor, physics;
-    nParticles,
+    nParcels,
     nCellsPerDirection, origin, ending,
     nSubSteps,
     initChunk! = init_droplets!,
