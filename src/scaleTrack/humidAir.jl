@@ -28,7 +28,13 @@
 struct Evaporation end
 struct NoEvaporation end
 
-struct HumidAirDroplet{EV}
+# Convective exchange with the carrier, the counterpart of a cloud's
+# heatTransferModel: under NoHeatTransfer the droplet temperature follows the
+# latent heat alone and the droplet contributes no thermal energy source
+struct HeatTransfer end
+struct NoHeatTransfer end
+
+struct HumidAirDroplet{EV, HT}
     μᶜ::scalar      # dynamic viscosity (continuous phase)
     ρᶜ::scalar      # density (continuous phase)
     ρᵈ::scalar      # density (disperse phase)
@@ -44,9 +50,10 @@ struct HumidAirDroplet{EV}
 end
 
 function HumidAirDroplet(
-    evaporation; μᶜ, ρᶜ, ρᵈ, g, Cₚᶜ, Cₚᵈ, Dᵈᶜ, Mᵈ, σᶜ, RG, SLH, nParticle = 1
+    evaporation, heatTransfer = HeatTransfer();
+    μᶜ, ρᶜ, ρᵈ, g, Cₚᶜ, Cₚᵈ, Dᵈᶜ, Mᵈ, σᶜ, RG, SLH, nParticle = 1
 )
-    HumidAirDroplet{typeof(evaporation)}(
+    HumidAirDroplet{typeof(evaporation), typeof(heatTransfer)}(
         μᶜ, ρᶜ, ρᵈ, ScalarVec(g...), Cₚᶜ, Cₚᵈ, Dᵈᶜ, Mᵈ, σᶜ, RG, SLH,
         nParticle
     )
@@ -95,6 +102,7 @@ default_extrapolator(::HumidAirDroplet, N) = NoExtrapolator()
 
 # Disperse-phase density, for the linear momentum of the cloud summary
 parcel_density(model::HumidAirDroplet) = model.ρᵈ
+parcel_weight(model::HumidAirDroplet) = model.nParticle
 
 @inline function load_parcel(model::HumidAirDroplet, c, i)
     @inbounds begin
@@ -203,44 +211,15 @@ end
     return (mᵈ, Tᵈ, ⌀, 0SCL)
 end
 
-@inline function substep(model::HumidAirDroplet, parcel, carrier, acc, Δt)
-    μᶜ = model.μᶜ
-    ρᶜ = model.ρᶜ
-    ρᵈ = model.ρᵈ
-    Cₚᶜ = model.Cₚᶜ
+# Droplet temperature change by convective heat transfer over one sub-step and
+# the thermal energy handed to the carrier: returns the new temperature and the
+# accumulated source.  The surface values and the Reynolds number are passed in
+# because the drag needs them as well.
+@inline function heat_transfer(
+    model::HumidAirDroplet{<:Any, HeatTransfer},
+    acc, Tᵈ, Tᶜ, κˢ, Pr, Re, ⌀, mᵈ, mᵈNew, Δt
+)
     Cₚᵈ = model.Cₚᵈ
-    g = model.g
-
-    ⌀ = parcel.props.⌀
-    Tᵈ = parcel.props.T
-    mᵈ = parcel.props.m
-    uᵈ = parcel.vel
-    uᶜ = carrier.U
-    Tᶜ = carrier.T
-    rhoVᶜ = carrier.rhoV
-
-    ### mass ###
-    mᵈNew, Tᵈ, ⌀New, Δmᵈ =
-        mass_transfer(model, Tᵈ, Tᶜ, rhoVᶜ, ⌀, mᵈ, Δt)
-    drhoVTrans = acc.drhoVTrans - Δmᵈ
-
-    ### temperature ###
-    # Thermal conductivity of air (temperature corrected)
-    κᶜ = scalar(Tᵈ*8.9182E-5SCL)
-
-    # surface values
-    Tˢ = (2SCL*Tᵈ + Tᶜ)/3SCL
-    TRatio = Tᶜ/Tˢ
-    ρˢ = ρᶜ*TRatio
-    μˢ = μᶜ/TRatio
-    κˢ = κᶜ/TRatio
-    Pr = Cₚᶜ*μˢ/κˢ
-
-    # Slip velocity
-    urel = uᶜ .- uᵈ
-
-    # Particle Reynolds number
-    Re = scalar(sqrt(sum(urel.^2))*⌀*ρˢ/μˢ)
 
     # Particle Nusselt number
     Nu = scalar(2SCL + 0.6SCL*sqrt(Re)*cbrt(Pr))
@@ -259,8 +238,60 @@ end
     ΔtEff = Δt/(1SCL + bcp*Δt)
 
     ΔTᵈ = scalar((acp - bcp*Tᵈ)*ΔtEff)
-    TᵈNew   = Tᵈ + ΔTᵈ
-    dhTrans = acc.dhTrans - Cₚᵈ*(mᵈNew*TᵈNew - mᵈ*Tᵈ)
+    TᵈNew = Tᵈ + ΔTᵈ
+
+    return (TᵈNew, acc.dhTrans - Cₚᵈ*(mᵈNew*TᵈNew - mᵈ*Tᵈ))
+end
+
+@inline function heat_transfer(
+    ::HumidAirDroplet{<:Any, NoHeatTransfer},
+    acc, Tᵈ, Tᶜ, κˢ, Pr, Re, ⌀, mᵈ, mᵈNew, Δt
+)
+    return (Tᵈ, acc.dhTrans)
+end
+
+@inline function substep(model::HumidAirDroplet, parcel, carrier, acc, Δt)
+    μᶜ = model.μᶜ
+    ρᶜ = model.ρᶜ
+    ρᵈ = model.ρᵈ
+    Cₚᶜ = model.Cₚᶜ
+    g = model.g
+
+    ⌀ = parcel.props.⌀
+    Tᵈ = parcel.props.T
+    mᵈ = parcel.props.m
+    uᵈ = parcel.vel
+    uᶜ = carrier.U
+    Tᶜ = carrier.T
+    rhoVᶜ = carrier.rhoV
+
+    ### mass ###
+    mᵈNew, Tᵈ, ⌀New, Δmᵈ =
+        mass_transfer(model, Tᵈ, Tᶜ, rhoVᶜ, ⌀, mᵈ, Δt)
+    drhoVTrans = acc.drhoVTrans - Δmᵈ
+
+    ### carrier state at the droplet surface ###
+    # Feeds both the heat transfer and, through the Reynolds number, the drag
+    # Thermal conductivity of air (temperature corrected)
+    κᶜ = scalar(Tᵈ*8.9182E-5SCL)
+
+    # surface values
+    Tˢ = (2SCL*Tᵈ + Tᶜ)/3SCL
+    TRatio = Tᶜ/Tˢ
+    ρˢ = ρᶜ*TRatio
+    μˢ = μᶜ/TRatio
+    κˢ = κᶜ/TRatio
+    Pr = Cₚᶜ*μˢ/κˢ
+
+    # Slip velocity
+    urel = uᶜ .- uᵈ
+
+    # Particle Reynolds number
+    Re = scalar(sqrt(sum(urel.^2))*⌀*ρˢ/μˢ)
+
+    ### temperature ###
+    TᵈNew, dhTrans =
+        heat_transfer(model, acc, Tᵈ, Tᶜ, κˢ, Pr, Re, ⌀, mᵈ, mᵈNew, Δt)
 
     ### velocity ###
 

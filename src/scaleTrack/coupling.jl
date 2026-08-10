@@ -114,14 +114,15 @@ end
     names = prop_names(model)
     nP = length(names)
 
-    sums = zeros(Float64, 2)            # parcel count, linear momentum
+    sums = zeros(Float64, 3)            # parcel count, mass, linear momentum
     mins = fill(Inf, 1 + nP)            # diameter, then the model's props
     maxs = fill(-Inf, 1 + nP)
 
     if comm.isHost
         s = combine_summaries([chunk_summary(c, model) for c in chunks])
         sums[1] = s.N
-        sums[2] = s.momentum
+        sums[2] = s.mass
+        sums[3] = s.momentum
         mins[1] = s.dMin
         maxs[1] = s.dMax
         for i in 1:nP
@@ -140,7 +141,8 @@ end
             N = round(Int, sums[1]),
             dMin = mins[1],
             dMax = maxs[1],
-            momentum = sums[2],
+            mass = sums[2],
+            momentum = sums[3],
             props = ntuple(i -> (mins[1 + i], maxs[1 + i]), nP),
         ),
         names

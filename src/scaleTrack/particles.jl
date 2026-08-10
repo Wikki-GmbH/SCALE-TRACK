@@ -149,8 +149,13 @@ end
 # parcel state after a coupling step.  Reached only through @cloudSummary, so
 # nothing below is compiled into a run that leaves the summary off.
 
-# parcel_density (the disperse-phase density used for the reported linear
-# momentum) is defined by each model in its own file.
+# parcel_density (the disperse-phase density used for the reported mass and
+# linear momentum) is defined by each model in its own file.
+
+# Physical particles one tracked parcel stands for.  The summary reports the
+# physical cloud, as an OpenFOAM cloud's info() does, so the extensive
+# quantities are weighted by it; a model without the notion weighs 1.
+parcel_weight(model) = 1SCL
 
 # Names of the model's per-parcel property arrays, needed on ranks that hold
 # no chunks to build a matching reduction buffer
@@ -162,10 +167,12 @@ prop_names(model) = keys(parcel_props(model, Vector{scalar}, 0))
 function chunk_summary(chunk, model)
     c = chunk
     dMin, dMax = extrema(c.d)
-    momentum = parcel_density(model)*π/6*sum(c.d.^3 .* c.W)
+    w = parcel_weight(model)*parcel_density(model)*π/6
+    mass = w*sum(c.d.^3)
+    momentum = w*sum(c.d.^3 .* c.W)
     props = map(a -> extrema(a), values(c.props))
-    return (N = Int(c.N), dMin = dMin, dMax = dMax, momentum = momentum,
-            props = props)
+    return (N = Int(c.N), dMin = dMin, dMax = dMax, mass = mass,
+            momentum = momentum, props = props)
 end
 
 # Combine the per-chunk summaries of this rank
@@ -174,18 +181,21 @@ function combine_summaries(summaries)
     N = sum(s -> s.N, summaries)
     dMin = minimum(s -> s.dMin, summaries)
     dMax = maximum(s -> s.dMax, summaries)
+    mass = sum(s -> s.mass, summaries)
     momentum = sum(s -> s.momentum, summaries)
     props = ntuple(length(first.props)) do i
         (minimum(s -> s.props[i][1], summaries),
          maximum(s -> s.props[i][2], summaries))
     end
-    return (N = N, dMin = dMin, dMax = dMax, momentum = momentum, props = props)
+    return (N = N, dMin = dMin, dMax = dMax, mass = mass,
+            momentum = momentum, props = props)
 end
 
 # Print in the layout of an OpenFOAM cloud info() block
 function print_cloud_summary(s, propNames)
     println("Cloud summary")
     println("    Current number of parcels   = ", s.N)
+    println("    Current mass in system      = ", s.mass)
     println("    Diameter min/max            = ", s.dMin, ", ", s.dMax)
     for (name, ex) in zip(propNames, s.props)
         println("    ", rpad(string(name), 8), " min/max            = ",
