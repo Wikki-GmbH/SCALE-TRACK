@@ -1,8 +1,9 @@
 #=
     SCALE-TRACK
 
-    Copyright (C) 2024-2026 Sergey Lesnik
-    Copyright (C) 2024-2026 Henrik Rusche
+    Copyright (C) 2025-2026 Sergey Lesnik
+    Copyright (C) 2025-2026 Henrik Rusche
+    Copyright (C) 2025 Silvio Schmalfuß
 
     This file is part of SCALE-TRACK, which is free software: you can
     redistribute it and/or modify it under the terms of the GNU General

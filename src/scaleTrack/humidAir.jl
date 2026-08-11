@@ -98,15 +98,25 @@ default_extrapolator(::HumidAirDroplet, N) = NoExtrapolator()
 parcel_density(model::HumidAirDroplet) = model.ρᵈ
 parcel_weight(model::HumidAirDroplet) = model.nParticle
 
+# The in-flight parcel state of a droplet, from its physical state.  The mass
+# is not stored with the parcel but recomputed from the diameter, so the
+# layout the sub-steps carry is defined here alone, so anything driving the
+# kernel needs no copy of it.
+@inline function parcel_state(model::HumidAirDroplet, pos, vel, T, ⌀)
+    d = scalar(⌀)
+    ParcelState(
+        pos, vel, (T = scalar(T), ⌀ = d, m = scalar(π*d^3*model.ρᵈ/6SCL))
+    )
+end
+
 @inline function load_parcel(model::HumidAirDroplet, c, i)
-    @inbounds begin
-        ⌀ = scalar(c.d[i])
-        ParcelState(
-            ScalarVec(c.X[i], c.Y[i], c.Z[i]),
-            ScalarVec(c.U[i], c.V[i], c.W[i]),
-            (T = scalar(c.props.T[i]), ⌀ = ⌀, m = scalar(π*⌀^3*model.ρᵈ/6SCL))
-        )
-    end
+    @inbounds parcel_state(
+        model,
+        ScalarVec(c.X[i], c.Y[i], c.Z[i]),
+        ScalarVec(c.U[i], c.V[i], c.W[i]),
+        c.props.T[i],
+        c.d[i]
+    )
 end
 
 @inline function store_parcel!(::HumidAirDroplet, c, i, parcel)
