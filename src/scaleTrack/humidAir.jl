@@ -93,7 +93,13 @@ device_eulerian_ptr_type(::HumidAirDroplet, ex::GPU) = HumidEulerian{
 # Per-particle droplet temperature
 parcel_props(::HumidAirDroplet, ::Type{T}, N) where {T} = (T = T(undef, N),)
 
-# The source extrapolation is disabled in the ported physics (see the header)
+# Droplets start at the standard reference temperature.  The transfer laws
+# divide by the droplet temperature and take a saturation pressure of it, so
+# a droplet at zero has no evolvable state at all.  A case with an initial
+# temperature of its own sets it in its own initializer.
+init_props!(chunk, ::HumidAirDroplet) = fill!(chunk.props.T, 293.15SCL)
+
+# This model hands the coupling its sources unextrapolated
 default_extrapolator(::HumidAirDroplet, N) = NoExtrapolator()
 
 # Disperse-phase density, for the linear momentum of the cloud summary
@@ -135,8 +141,8 @@ end
     return nothing
 end
 
-# The initial carrier read clamps the vapour density; the reread after a cell
-# change (reload_carrier) does not — preserved as found
+# The vapour density is clamped to non-negative values on the first read of a
+# carrier state
 @inline function load_carrier(::HumidAirDroplet, eulerian, posI)
     @inbounds (
         U = eulerian.U[posI],

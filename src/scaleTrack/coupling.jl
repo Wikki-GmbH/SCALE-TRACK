@@ -400,6 +400,7 @@ function init_async_tracking!(
         for i in eachindex(chunks)
             chunks[i] =
                 allocate_chunk(comm, executor, model, nPerChunk, nSubSteps)
+            init_props!(chunks[i], model)
             initChunk!(chunks[i], mesh, executor, iChunk₀ + i, nChunksGlobal)
         end
         tNow = timing(tNow, "Initialized particle chunks")
@@ -460,6 +461,7 @@ function init_sync_tracking!(
     tNow = timing(tNow, "Allocated particle chunk")
     # The single chunk is the whole cloud, so there is no numbering to hand
     # out: the initializer keeps its own defaults
+    init_props!(chunk, model)
     initChunk!(chunk, mesh, executor)
     tNow = timing(tNow, "Initialized particle chunk")
 
@@ -482,8 +484,7 @@ end
 
 # Fill the carrier velocity fields with seeded random data.  Models with
 # additional carrier fields (temperature, vapour density) need those
-# initialized to physically sensible ranges by the caller — see the humid
-# regression test for an example.
+# initialized to physically sensible ranges by the caller.
 function randomize_velocity!()
     e = reg["eulerian"]
     if e isa Vector

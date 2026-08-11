@@ -15,9 +15,17 @@
     parcel state write-back.
 =#
 
+# Initial values of a model's per-parcel property arrays.  The drivers apply
+# this to every chunk before the initializer runs, so an initializer only has
+# to set what its case wants different.  Zero is a usable state for a property
+# that merely accumulates; one that enters a law as a divisor or an argument
+# of a nonlinear function has to name a value here, or a cloud that keeps the
+# default state cannot be evolved at all.
+init_props!(chunk, model) = foreach(a -> fill!(a, 0.0), values(chunk.props))
+
 # Default particle initialization: diameters and positions uniformly random
-# over their ranges, velocities zero, model-specific parcel arrays zero.
-# Cases with different initial conditions pass their own function to
+# over their ranges, velocities zero, model properties as the model defines
+# them.  Cases with different initial conditions pass their own function to
 # init_async_tracking! / init_sync_tracking!.
 #
 # The driver hands every initializer the chunk's index within the whole cloud
@@ -45,7 +53,6 @@ function init!(chunk, mesh, executor, iChunk=19891, nChunksGlobal=1)
     fill!(c.U, 0.0)
     fill!(c.V, 0.0)
     fill!(c.W, 0.0)
-    foreach(a -> fill!(a, 0.0), values(c.props))
     return nothing
 end
 
@@ -256,12 +263,12 @@ end
 end
 
 ###############################################################################
-# Cloud summary: the counterpart of an OpenFOAM cloud's info(), reporting the
-# parcel state after a coupling step.  Reached only through @cloudSummary, so
-# nothing below is compiled into a run that leaves the summary off.
+# Cloud summary: the parcel state after a coupling step, in the shape a
+# Lagrangian solver reports it.  Guarded, so a run that does not ask for the
+# summary compiles none of this.
 
-# parcel_density (the disperse-phase density used for the reported mass and
-# linear momentum) is defined by each model in its own file.
+# The disperse-phase density used for the reported mass and linear momentum is
+# a model trait.
 
 # Physical particles one tracked parcel stands for.  The summary reports the
 # physical cloud, as an OpenFOAM cloud's info() does, so the extensive
