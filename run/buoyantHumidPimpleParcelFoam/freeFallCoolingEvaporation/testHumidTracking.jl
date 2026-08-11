@@ -11,6 +11,32 @@
 =#
 
 #=
+    SCALE-TRACK
+
+    Copyright (C) 2026 Sergey Lesnik
+    Copyright (C) 2026 Henrik Rusche
+
+    This file is part of SCALE-TRACK, which is free software: you can
+    redistribute it and/or modify it under the terms of the GNU General
+    Public License as published by the Free Software Foundation, either
+    version 3 of the License, or (at your option) any later version.
+    See <http://www.gnu.org/licenses/> for details.
+=#
+
+#=
+    SCALE-TRACK
+
+    Copyright (C) 2026 Sergey Lesnik
+    Copyright (C) 2026 Henrik Rusche
+
+    This file is part of SCALE-TRACK, which is free software: you can
+    redistribute it and/or modify it under the terms of the GNU General
+    Public License as published by the Free Software Foundation, either
+    version 3 of the License, or (at your option) any later version.
+    See <http://www.gnu.org/licenses/> for details.
+=#
+
+#=
     Regression test for the HumidAirDroplet physics without OpenFOAM.
 
     Runs the synchronous driver on frozen, seeded random carrier fields and

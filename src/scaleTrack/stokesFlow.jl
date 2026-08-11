@@ -48,9 +48,10 @@ carrier_fields(::Type{<:TwoWayEulerian}) = (:U,)
 source_fields(::Type{<:TwoWayEulerian}) = (:UTrans,)
 
 host_eulerian_type(::StokesFlow) = TwoWayEulerian{VectorField}
-device_eulerian_type(::StokesFlow) = TwoWayEulerian{CuVector{ScalarVec}}
-device_eulerian_ptr_type(::StokesFlow) =
-    TwoWayEulerian{CuDeviceVector{ScalarVec, 1}}
+device_eulerian_type(::StokesFlow, ex::GPU) =
+    TwoWayEulerian{device_vector_type(ex, ScalarVec)}
+device_eulerian_ptr_type(::StokesFlow, ex::GPU) =
+    TwoWayEulerian{device_ptr_vector_type(ex, ScalarVec)}
 
 # No model-specific per-particle arrays
 parcel_props(::StokesFlow, ::Type{T}, N) where {T} = (;)
@@ -126,20 +127,14 @@ end
 end
 
 @inline function flush_sources!(
-    ::StokesFlow, eulerian, state0, parcel, posI, ::GPU
+    ::StokesFlow, eulerian, state0, parcel, posI, executor::GPU
 )
     @inbounds begin
         mᵈByρᶜ = parcel.props.mᵈByρᶜ
         for i=1LBL:3LBL
-            # ScalarVec is immutable and thus its components cannot be mutated
-            # atomically the straightforward way.  Reinterpret the eulerian
-            # field at a location specified by posI with an offset as scalar
-            # and get pointer to it.  Use the pointer to mutate data.
-            scalar_ptr = pointer(
-                reinterpret(scalar, eulerian.UTrans), (posI-1LBL)*3LBL+i
-            )
-            CUDA.atomic_add!(
-                scalar_ptr, mᵈByρᶜ*(state0[i] - parcel.vel[i])
+            atomic_add_component!(
+                eulerian.UTrans, posI, i,
+                mᵈByρᶜ*(state0[i] - parcel.vel[i]), executor
             )
         end
     end

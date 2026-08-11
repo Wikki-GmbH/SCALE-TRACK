@@ -83,10 +83,12 @@ carrier_fields(::Type{<:HumidEulerian}) = (:U, :T, :rhoV)
 source_fields(::Type{<:HumidEulerian}) = (:UTrans, :hTrans, :rhoVTrans)
 
 host_eulerian_type(::HumidAirDroplet) = HumidEulerian{VectorField, ScalarField}
-device_eulerian_type(::HumidAirDroplet) =
-    HumidEulerian{CuVector{ScalarVec}, CuVector{scalar}}
-device_eulerian_ptr_type(::HumidAirDroplet) =
-    HumidEulerian{CuDeviceVector{ScalarVec, 1}, CuDeviceVector{scalar, 1}}
+device_eulerian_type(::HumidAirDroplet, ex::GPU) = HumidEulerian{
+    device_vector_type(ex, ScalarVec), device_vector_type(ex, scalar)
+}
+device_eulerian_ptr_type(::HumidAirDroplet, ex::GPU) = HumidEulerian{
+    device_ptr_vector_type(ex, ScalarVec), device_ptr_vector_type(ex, scalar)
+}
 
 # Per-particle droplet temperature
 parcel_props(::HumidAirDroplet, ::Type{T}, N) where {T} = (T = T(undef, N),)
@@ -369,33 +371,22 @@ end
 end
 
 @inline function flush_sources!(
-    model::HumidAirDroplet, eulerian, acc, parcel, posI, ::GPU
+    model::HumidAirDroplet, eulerian, acc, parcel, posI, executor::GPU
 )
     w = model.nParticle
     @inbounds begin
         # momentum transfer
         for i=1LBL:3LBL
-            # Reinterpret the eulerian field at a location specified by posI
-            # with an offset as scalar and get pointer to it.
-            scalar_ptr = pointer(
-                reinterpret(scalar, eulerian.UTrans), (posI-1LBL)*3LBL+i
-            )
-            CUDA.atomic_add!(
-                scalar_ptr, (w*acc.dUTrans[i])
+            atomic_add_component!(
+                eulerian.UTrans, posI, i, (w*acc.dUTrans[i]), executor
             )
         end
 
         # thermal energy transfer
-        scalar_ptr = pointer(
-            reinterpret(scalar, eulerian.hTrans), posI
-        )
-        CUDA.atomic_add!(scalar_ptr, (w*acc.dhTrans))
+        atomic_add!(eulerian.hTrans, posI, (w*acc.dhTrans), executor)
 
         # mass transfer
-        scalar_ptr = pointer(
-            reinterpret(scalar, eulerian.rhoVTrans), posI
-        )
-        CUDA.atomic_add!(scalar_ptr, (w*acc.drhoVTrans))
+        atomic_add!(eulerian.rhoVTrans, posI, (w*acc.drhoVTrans), executor)
     end
     return (dUTrans = ScalarVec(0, 0, 0), dhTrans = 0SCL, drhoVTrans = 0SCL)
 end

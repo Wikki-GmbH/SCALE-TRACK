@@ -107,9 +107,15 @@ struct ParcelState{P}
 end
 
 # Structs used for function tagging to identify on which backend the code is
-# executed
+# executed.  GPU is abstract: everything that is the same for every vendor
+# dispatches on it, while the concrete subtypes select the vendor API.  The
+# backend file included by scaleTrack.jl defines GPU() to return its own
+# subtype, so a case script keeps selecting the GPU with `executor = GPU()`
+# whichever vendor it was built against.
 struct CPU end
-struct GPU end
+abstract type GPU end
+struct CUDAGPU <: GPU end
+struct ROCmGPU <: GPU end
 
 # Helper to copy all struct data from host to device
 function copy!(a, b)

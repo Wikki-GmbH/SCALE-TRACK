@@ -39,13 +39,21 @@
 
     The scalar and label type aliases must match the OpenFOAM build
     (WM_PRECISION_OPTION, WM_LABEL_SIZE).  A case script may override the
-    defaults by defining the constants before including this file:
+    defaults by defining the constants before including this file, and it
+    selects the GPU vendor the same way:
 
         const scalar = Float64   # DP build; default is Float32 (SP)
         const label = Int32
+        const gpuBackend = :ROCm # AMD GPUs; default is :CUDA
         include("<path to>/src/scaleTrack/scaleTrack.jl")
 
-    See README.md for the description of the individual library files.
+    Only the packages of the selected vendor are loaded, so a machine needs
+    CUDA.jl or AMDGPU.jl, not both.  `executor = GPU()` then yields whichever
+    backend was selected.  A case that does not set gpuBackend takes it from
+    the environment variable ST_GPU_BACKEND, so the same case runs on either
+    vendor without editing.
+
+    Each file below carries a header comment describing what it holds.
 =#
 
 tNow = time()
@@ -58,9 +66,7 @@ end
 reg["gc_num"] = Base.gc_num()
 
 using Random
-# using Distributions  # Hangs when profiling with Nsight
 using WriteVTK
-using CUDA
 using StaticArrays
 using BenchmarkTools
 import Adapt
@@ -68,6 +74,23 @@ import Base: *, Event
 using Accessors
 using MPI
 using Base.Threads
+
+# The GPU vendor backend.  Only the selected one is loaded, so a machine needs
+# the packages of its own vendor only.  Overridable by the case script in the
+# same way as the type aliases below, or -- since the vendor is a property of
+# the machine rather than of the case -- through the environment, which lets
+# the same case run on either.
+if !isdefined(Main, :gpuBackend)
+    const gpuBackend = Symbol(get(ENV, "ST_GPU_BACKEND", "CUDA"))
+end
+
+if gpuBackend === :CUDA
+    using CUDA
+elseif gpuBackend === :ROCm
+    using AMDGPU
+else
+    error("Unknown gpuBackend $(gpuBackend); expected :CUDA or :ROCm")
+end
 
 ΔtLoadModules = time() - tNow
 
@@ -91,6 +114,11 @@ include("stokesFlow.jl")
 include("humidAir.jl")
 include("executorCPU.jl")
 include("executorGPU.jl")
+if gpuBackend === :CUDA
+    include("executorCUDA.jl")
+else
+    include("executorROCm.jl")
+end
 include("asyncTracking.jl")
 include("vtkOutput.jl")
 include("coupling.jl")
