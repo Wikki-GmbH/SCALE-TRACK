@@ -109,7 +109,7 @@ end
 # Structs used for function tagging to identify on which backend the code is
 # executed.  GPU is abstract: everything that is the same for every vendor
 # dispatches on it, while the concrete subtypes select the vendor API.  The
-# backend file included by scaleTrack.jl defines GPU() to return its own
+# selected backend defines GPU() to return its own
 # subtype, so a case script keeps selecting the GPU with `executor = GPU()`
 # whichever vendor it was built against.
 struct CPU end

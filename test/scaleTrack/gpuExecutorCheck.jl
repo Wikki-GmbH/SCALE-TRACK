@@ -56,10 +56,8 @@ const DT       = 0.01
 # sitting within roundoff of a cell face can be located in either of the two
 # cells, and its whole contribution then moves with it; with a parcel count
 # of the order of the cell count that displaces a large fraction of a cell's
-# source.  Single precision therefore shows per-cell differences of a few
-# percent while double precision, where no parcel changes cell, stays at
-# 1e-10.  The per-cell tolerance is a loose regression guard against that
-# backdrop.
+# source.  The per-cell tolerance is therefore a loose regression guard, and
+# loosest in single precision.
 #
 # What reassignment cannot perturb is the total over all cells, so the sum of
 # each source field is compared separately and tightly -- that is the

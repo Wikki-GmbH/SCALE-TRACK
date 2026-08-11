@@ -31,7 +31,7 @@ init_async_tracking!(
     nSubSteps,
 
     # Lagrangian decomposition by rank count; must evenly divide the cell
-    # counts.  Allrun runs the case serially
+    # counts.  This case runs serially
     decompositions = Dict(
         1 => (1, 1, 1),
         2 => (1, 1, 2)

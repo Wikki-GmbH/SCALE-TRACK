@@ -1,6 +1,17 @@
 JULIA_SHARE = $(shell julia -e 'print(joinpath(Sys.BINDIR, Base.DATAROOTDIR, "julia"))')
 JULIA_COMPILE_FLAGS = $(shell $(JULIA_SHARE)/julia-config.jl --cflags)
-JULIA_LINK_FLAGS = $(shell $(JULIA_SHARE)/julia-config.jl --ldflags)
+/* wmake runs this file through cpp, so the comments have to be C ones: a
+ * line starting with # is read as a preprocessing directive.
+ *
+ * julia-config.jl puts Julia's private lib directory on the rpath, and ld
+ * searches the rpath when resolving a *shared library's own* dependencies.
+ * Where OpenFOAM links a library that needs a versioned symbol of a system
+ * library Julia also bundles, ld picks Julia's copy and the link fails.
+ * Export JULIA_RPATH_LINK in that case, e.g.
+ *   export JULIA_RPATH_LINK="-Wl,-rpath-link,/lib/x86_64-linux-gnu"
+ * (-rpath-link is searched before -rpath).  Empty and harmless otherwise.
+ */
+JULIA_LINK_FLAGS = $(JULIA_RPATH_LINK) $(shell $(JULIA_SHARE)/julia-config.jl --ldflags)
 JULIA_LIBS = $(shell $(JULIA_SHARE)/julia-config.jl --ldlibs)
 
 EXE_INC = \
@@ -16,7 +27,6 @@ EXE_INC = \
     -I$(LIB_SRC)/dynamicMesh/lnInclude \
     -I$(LIB_SRC)/dynamicFvMesh/lnInclude \
     -I$(LIB_SRC)/regionFaModels/lnInclude \
-    -DFULLDEBUG -g -O0 \
     $(JULIA_COMPILE_FLAGS)
 
 EXE_LIBS = \
@@ -37,5 +47,4 @@ EXE_LIBS = \
     -ltopoChangerFvMesh \
     -lregionFaModels \
     -lfiniteArea \
-    -DFULLDEBUG -g -O0 \
     $(JULIA_LINK_FLAGS) $(JULIA_LIBS)

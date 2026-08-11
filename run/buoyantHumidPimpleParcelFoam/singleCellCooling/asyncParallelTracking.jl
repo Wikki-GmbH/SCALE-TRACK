@@ -33,8 +33,7 @@ init_async_tracking!(
     # A single cell admits only the trivial decomposition
     decompositions = Dict(1 => (1, 1, 1)),
 
-    # Hold the previous true source between coupling steps, which is what the
-    # synchronous reference solver this case is compared against does
+    # Hold the previous true source between coupling steps
     extrapolator = ConstExtrapolator,
 
     gcTimeStepInterval = 100,

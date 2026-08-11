@@ -247,11 +247,9 @@ function sync_evolve!(chunk, model, eulerian, mesh, Δt, executor::CPU)
             Threads.threadpool(), "), ", nTasks,
             " tracking tasks on threads ", taskThreadIds, " (pool :default)"
         )
-        # When called from the interactive thread (the embedded solver always
-        # runs with --threads=N,1) no tracking task may land on it.  Without
-        # an interactive thread (standalone --threads=N) the caller's thread
-        # is part of the default pool and may legitimately run a task while
-        # the caller blocks in @sync.
+        # With an interactive thread present, no tracking task may land on
+        # it.  Without one the calling thread belongs to the default pool and
+        # may legitimately run a task while the caller blocks.
         if Threads.threadpool() == :interactive && callerId in taskThreadIds
             error(
                 "Tracking task scheduled on the thread driving OpenFOAM"

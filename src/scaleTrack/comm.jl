@@ -13,13 +13,29 @@
 
 abstract type CommMember end
 
+# The host communicator spans the tracking masters alone.  It is what gives
+# the cloud a decomposition-independent ordering: the masters are numbered by
+# it, so a global quantity split over them -- the parcel count, and with it
+# each chunk's stretch of the space-filling curve -- is the same however the
+# ranks happen to be distributed over the nodes.
+#
+# It is kept rather than formed when needed: forming it is collective over
+# every rank, and the places that use it run on the masters alone.
 struct Master <: CommMember
     deviceNumber::label
     requiredEulerianRanks::Set{label}
     inquiringEulerianRanks::Vector{label}
+    hostCommunicator::MPI.Comm
+    hostRank::label
+    nHosts::label
 end
 
-Master(deviceNumber) = Master(deviceNumber, Set{label}(), Vector{label}())
+function Master(deviceNumber, hostCommunicator)
+    Master(
+        deviceNumber, Set{label}(), Vector{label}(), hostCommunicator,
+        MPI.Comm_rank(hostCommunicator), MPI.Comm_size(hostCommunicator)
+    )
+end
 
 struct Slave <: CommMember
     inquiringEulerianRanks::Vector{label}
@@ -66,8 +82,7 @@ function initComm(executor)
         # Construct communication with a single rank and executor.  The MPI
         # library may install its own SIGSEGV handler, which would break the
         # safepoint mechanism Julia's garbage collector uses to park the
-        # threads — preserve Julia's handler across the initialization (the
-        # solver guards its OpenFOAM signal setup the same way)
+        # threads — preserve Julia's handler across the initialization
         SIGSEGV = 11 % Cint
         oldAction = Vector{UInt8}(undef, 512)
         ccall(
@@ -92,10 +107,16 @@ function initComm(executor)
     # Assign devices to ranks uniformly
     hostRanks =
         range(0, step=hostStride, length=min(nRanksPerNode, nDevicesPerNode))
-    if shmRank in hostRanks
+    isHost = shmRank in hostRanks
+
+    # Collective over all of COMM_WORLD; the ranks that are not tracking
+    # masters pass no colour and end up outside the resulting communicator
+    hostComm = MPI.Comm_split(MPI.COMM_WORLD, isHost ? 0 : nothing, 0)
+
+    if isHost
         deviceNumber = shmRank ÷ hostStride
         set_device!(deviceNumber, executor)
-        comm = Comm(Master(deviceNumber), MPI.COMM_WORLD)
+        comm = Comm(Master(deviceNumber, hostComm), MPI.COMM_WORLD)
     else
         comm = Comm(Slave(), MPI.COMM_WORLD)
     end

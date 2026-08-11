@@ -278,21 +278,20 @@ banner("VERDICT")
 # Two things bound how close the shipped scheme can come to REF, and the
 # tolerance is whichever bound is larger.
 #
-# Truncation: the scheme is first-order semi-implicit Euler, so at
-# Dt/tau ~ 7e-5 it is of order 1e-4 K on a 3 K excursion.  Expected, correct,
-# and what the double-precision tolerance below is set from.
+# Truncation: the scheme is first-order semi-implicit Euler, so its error
+# follows the ratio of the sub-step to the thermal relaxation time.  Expected,
+# correct, and what the double-precision tolerance below is set from.
 #
 # Absorption: a sub-step moves the droplet temperature by (Dt/tau)*(Tc - Td),
 # and once that falls below half the resolution of the stored temperature the
 # addition returns the temperature unchanged and the droplet stops advancing.
 # No arithmetic on an absolute temperature avoids this -- it is the storage,
 # not the expression -- so the reachable gap is floored at ulp(T)/(2Dt/tau).
-# In single precision at this sub-step that is 0.5 K; in double it is 1e-9 K,
-# where truncation dominates instead.
+# In single precision that floor dominates; in double, truncation does.
 #
-# The floor is proportional to the number of sub-steps: halving a sub-step
-# halves the increment and so doubles the gap at which it is absorbed.  Ten
-# sub-steps per coupling step would floor case A at 0.05 K, one at 0.005 K.
+# The floor grows with the number of sub-steps: a smaller sub-step is a
+# smaller increment, absorbed at a larger gap.  Resolving the excursion finely
+# and reaching it closely therefore pull against each other.
 #
 # The tolerance sits just above the floor, so the check still says the scheme
 # reaches it and does no worse.

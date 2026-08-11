@@ -12,9 +12,8 @@
     See <http://www.gnu.org/licenses/> for details.
 =#
 
-# Case parameters of freeFallCoolingEvaporation, shared by the coupled setup
-# (asyncParallelTracking.jl) and the regression test (testHumidTracking.jl).
-# The library (src/scaleTrack) must be included before this file.
+# Case parameters, shared by the coupled setup and the regression test.
+# The library must be included before this file.
 
 # Physical properties in SI units
 physics = HumidAirDroplet(
@@ -43,7 +42,7 @@ ending = [0.1, 0.1, 10.0]
 
 # Droplets released in the top 10% of the column with uniform diameter and
 # temperature
-function init_droplets!(chunk, mesh, executor, randSeed=19891)
+function init_droplets!(chunk, mesh, executor, randSeed=19891, nChunksGlobal=1)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 

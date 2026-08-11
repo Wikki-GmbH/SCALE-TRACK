@@ -15,8 +15,8 @@
 
     A case's Allrun greps the two solver logs into paired *_OF.csv / *_ST.csv
     files; this turns those pairs into a pass/fail with an exit code.  A case
-    provides only its quantities and their tolerances, in its checks.jl, and
-    Allcheck runs that.
+    provides only its quantities and their tolerances, in its own check
+    script.
 
     Two things every such comparison must account for, and does here:
 

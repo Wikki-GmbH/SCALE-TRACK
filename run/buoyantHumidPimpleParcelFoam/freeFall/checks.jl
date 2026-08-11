@@ -30,8 +30,8 @@ st = read_series("momentumZ_ST.csv")
 
 # The first row at which a series stops falling.  Only the phase before it is
 # comparable: the momentum there is a function of the time since release,
-# which both solvers start from rest, while past the bounce the two are a few
-# steps out of phase and describe different states.
+# which both solvers start from rest, while past the bounce the two are out of
+# phase and describe different states.
 function bounce(s)
     for i in 2:length(s)
         s[i][1] >= 0 && return i

@@ -13,10 +13,9 @@
 # What Allcheck compares for singleCellEvaporation, and how closely.
 #
 # One droplet evaporating into still air that starts at its own temperature.
-# It cools about 11 K to its wet bulb, and the parcel temperature is judged
-# over that excursion rather than in absolute terms: the tracking resolves
-# the cooling with ten Lagrangian sub-steps per coupling step where the
-# reference takes one, which is most of what separates the two.
+# It cools to its wet bulb, and the parcel temperature is judged over that
+# excursion rather than in absolute terms: the two sides resolve the cooling
+# with different numbers of Lagrangian sub-steps.
 
 include(joinpath(@__DIR__, "../../../test/caseCompare.jl"))
 

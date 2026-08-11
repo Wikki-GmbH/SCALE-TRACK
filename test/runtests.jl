@@ -35,8 +35,9 @@ const ROOT = abspath(joinpath(@__DIR__, ".."))
 const JULIA = Base.julia_cmd()
 
 # Run a check as its own process, silently unless it fails or
-# SCALETRACK_TEST_VERBOSE is set.  A check that is known to fail passes
-# quiet = true, so the suite stays readable.  Returns true if it exited zero.
+# SCALETRACK_TEST_VERBOSE is set.  Passing quiet = true suppresses the output
+# of a check whose failure is expected, so the suite stays readable.
+# Returns true if it exited zero.
 function run_check(script, args...; threads = nothing, quiet = false)
     cmd = `$JULIA --project=$ROOT`
     threads === nothing || (cmd = `$JULIA --project=$ROOT --threads=$threads`)
@@ -76,6 +77,10 @@ mktempdir() do tmp
     @testset "sync driver against the kernel" begin
         @test run_check("test/scaleTrack/syncDriverCheck.jl", "DP")
         @test run_check("test/scaleTrack/syncDriverCheck.jl", "SP")
+    end
+
+    @testset "Hilbert curve" begin
+        @test run_check("test/scaleTrack/hilbertCheck.jl")
     end
 
     # ----------------------------------------------------------- regression

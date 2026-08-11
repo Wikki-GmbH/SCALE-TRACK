@@ -66,7 +66,7 @@ Foam::CloudParcel<ParcelType>::CloudParcel
         {
             is  >> T_ >> Cp_;
         }
-        else if (!is.checkLabelSize<>() || !is.checkScalarSize<>())
+        else if (!is.checkLabelSize<label>() || !is.checkScalarSize<scalar>())
         {
             // Non-native label or scalar size
 

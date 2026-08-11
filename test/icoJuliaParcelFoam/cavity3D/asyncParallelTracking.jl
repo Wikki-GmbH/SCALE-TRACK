@@ -35,7 +35,7 @@ init_async_tracking!(
     nParcels = 100_000,
     nChunks = 10,
 
-    # Mesh description; must be consistent with system/blockMeshDict
+    # Mesh description; must be consistent with the case's mesh
     nCellsPerDirection = 40,
     origin = 0.0,
     ending = 1.0,

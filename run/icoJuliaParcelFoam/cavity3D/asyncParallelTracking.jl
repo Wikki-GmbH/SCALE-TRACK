@@ -28,20 +28,14 @@ physics = StokesFlow(
     μᶜ = 1e-3,  # continuous phase dynamic viscosity
     ρᶜ = 1e3,   # continuous phase density
     ρᵈ = 1.0,   # disperse phase density
-    # These properties lead to large velocity source terms
-    # μᶜ = 1e3,
-    # ρᵈ = 1e8,
 )
 
 init_async_tracking!(
     executor, physics;
-    # nParcels = 800_000_000  # RTX3090
-    # nParcels = 25_000_000  # RTX3090 fast
-    # nParcels = 1_000_000  # RTX3090 faster
-    nParcels = 100_000,  # GT710
+    nParcels = 100_000,
     nChunks = 10,
 
-    # Mesh description; must be consistent with system/blockMeshDict
+    # Mesh description; must be consistent with the case's mesh
     nCellsPerDirection = 40,
     origin = 0.0,
     ending = 1.0,

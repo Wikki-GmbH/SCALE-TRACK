@@ -158,14 +158,23 @@ end
 function evolve_cloud(Δt, ::AsyncMode)
     trigger_gc_if_due!()
 
+    reg["timeStep"] += 1
+    iStep = reg["timeStep"]
+
+    # The solver calls in once per step and always at the same point of its
+    # loop, so one step ends where the next begins; what is not the tracking
+    # is the Eulerian solver
+    tNow = time()
+    record_timing!("step", tNow - reg["tStepStart"], iStep)
+    record_timing!("euler", tNow - reg["tEulerStart"], iStep)
+    reg["tStepStart"] = tNow
+
     # Reported before the next evolve is unblocked, which is where the chunks
     # are settled: they then hold the state of the previous coupling step, so
-    # the step just completed is the one indexed here.  The report still
-    # trails a synchronous reference by the one step the coupling is
-    # asynchronous by.
+    # the step just completed is the one indexed here.  The report trails by
+    # the one step the coupling is asynchronous by.
     @cloudSummary begin
-        reg["timeStep"] += 1
-        completed = reg["timeStep"] - 1
+        completed = iStep - 1
         completed > 0 && cloud_summary_due(completed) &&
             report_cloud_summary(AsyncMode())
     end
@@ -179,6 +188,9 @@ function evolve_cloud(Δt, ::AsyncMode)
 
     global tStart = time()
     evolve!(control, executor)
+
+    comm.isMaster && timings_write_due(iStep) && save_timings(comm)
+    reg["tEulerStart"] = time()
 
     return nothing
 end
@@ -230,6 +242,44 @@ const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
 expand3(v::Real) = [v, v, v]
 expand3(v) = collect(v)
 
+# Resolve the cloud size into the parcel count of one chunk.  Only tracking
+# masters hold chunks, so a cloud given as a whole is split over them and
+# their chunks; the count then depends on the run, not on the case alone.
+function parcels_per_chunk(nParcels, nParcelsTotal, nChunks, comm)
+    if (nParcels === nothing) == (nParcelsTotal === nothing)
+        throw(
+            ErrorException(
+                string(
+                    "Give the cloud size either as nParcels (per chunk) or",
+                    " as nParcelsTotal (over the whole cloud) -- not both",
+                    " and not neither."
+                )
+            )
+        )
+    end
+    nParcelsTotal === nothing && return nParcels
+
+    nChunksGlobal = nChunks*comm.member.nHosts
+    n, remainder = divrem(nParcelsTotal, nChunksGlobal)
+    if n < 1
+        throw(
+            ErrorException(
+                string(
+                    "nParcelsTotal = ", nParcelsTotal, " leaves less than",
+                    " one parcel for each of the ", nChunksGlobal, " chunks"
+                )
+            )
+        )
+    end
+    if remainder != 0
+        println(
+            "nParcelsTotal = ", nParcelsTotal, " does not split evenly over ",
+            nChunksGlobal, " chunks; tracking ", n*nChunksGlobal, " parcels"
+        )
+    end
+    return n
+end
+
 function report_startup(tNow, s)
     gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
     reg["gc_num"] = Base.gc_num()
@@ -245,24 +295,35 @@ end
     model.
 
     The mesh description (nCellsPerDirection, origin, ending) must be kept
-    consistent with the case's system/blockMeshDict.  decompositions maps the
-    MPI rank count to the Lagrangian domain decomposition; the entry matching
-    the run's rank count is chosen, and it must evenly divide the cell counts
-    (it is independent of the Eulerian decomposeParDict apart from the rank
-    count).  initChunk!(chunk, mesh, executor, seed) provides the initial
-    particle distribution and defaults to uniformly random positions and
-    diameters (init! in particles.jl).  nSubSteps is the number of Lagrangian
-    sub-steps per coupling time step.  The source extrapolator defaults to
-    the model's default_extrapolator.
+    consistent with the case's mesh description.  decompositions maps the MPI
+    rank count to the Lagrangian domain decomposition; the entry matching the
+    run's rank count is chosen, and it must evenly divide the cell counts (it
+    is independent of the Eulerian decomposition apart from the rank count).
+
+    The cloud is given either as nParcels, the number per chunk, or as
+    nParcelsTotal, the number over the whole cloud -- the latter for a case
+    whose cloud is to stay the same size as the rank count varies, since the
+    split over the tracking masters then follows from the run.  nChunks is
+    per tracking master either way.
+
+    initChunk!(chunk, mesh, executor, iChunk, nChunksGlobal) provides the
+    initial particle distribution and defaults to uniformly random positions
+    and diameters; iChunk numbers the chunk within
+    the whole cloud.  nSubSteps is the number of Lagrangian sub-steps per
+    coupling time step.  The source extrapolator defaults to the model's
+    default_extrapolator.  saveTimingsInterval > 0 writes the coupling-step
+    timings to stats_np<ranks> every that many steps.
 =#
 function init_async_tracking!(
     executorArg, modelArg;
-    nParcels,
+    nParcels = nothing,
+    nParcelsTotal = nothing,
     nChunks,
     nCellsPerDirection, origin, ending,
     decompositions,
     nSubSteps = 10,
     gcTimeStepInterval = 100,
+    saveTimingsInterval = 0,
     extrapolator = nothing,
     initChunk! = init!,
 )
@@ -293,9 +354,10 @@ function init_async_tracking!(
     reg["gcTimeStepInterval"] = gcTimeStepInterval
     reg["timestepsSinceLastGC"] = 0
     reg["timeStep"] = 0
+    init_timings!(saveTimingsInterval)
 
     @show model
-    @show nParcels nChunks nCellsPerDirection origin ending
+    @show nParcels nParcelsTotal nChunks nCellsPerDirection origin ending
     @show decomposition nSubSteps gcTimeStepInterval
 
     global mesh = construct_mesh(
@@ -325,11 +387,20 @@ function init_async_tracking!(
     lock(control.locks.eulerianComms[comm.jlRank])
 
     if comm.isHost
+        nPerChunk = parcels_per_chunk(nParcels, nParcelsTotal, nChunks, comm)
+
+        # The chunks of all masters are numbered consecutively by the order
+        # of the host communicator, so an initializer can hand each chunk its
+        # own region of the domain
+        nChunksGlobal = nChunks*comm.member.nHosts
+        iChunk₀ = nChunks*comm.member.hostRank
+        @show nPerChunk nChunksGlobal
+
         global chunks = Vector{Chunk}(undef, nChunks)
         for i in eachindex(chunks)
             chunks[i] =
-                allocate_chunk(comm, executor, model, nParcels, nSubSteps)
-            initChunk!(chunks[i], mesh, executor, i)
+                allocate_chunk(comm, executor, model, nPerChunk, nSubSteps)
+            initChunk!(chunks[i], mesh, executor, iChunk₀ + i, nChunksGlobal)
         end
         tNow = timing(tNow, "Initialized particle chunks")
 
@@ -387,6 +458,8 @@ function init_sync_tracking!(
 
     global chunk = allocate_chunk(executor, model, nParcels, nSubSteps)
     tNow = timing(tNow, "Allocated particle chunk")
+    # The single chunk is the whole cloud, so there is no numbering to hand
+    # out: the initializer keeps its own defaults
     initChunk!(chunk, mesh, executor)
     tNow = timing(tNow, "Initialized particle chunk")
 

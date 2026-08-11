@@ -201,9 +201,15 @@ function init_async_evolve!(
         )
     end
 
+    # Counts the evolves this task has completed, which trails the solver's
+    # step count by whatever the coupling has in flight
+    iEvolve = 0
+
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
+        iEvolve += 1
+
         # Non-blocking consensus for processing Eulerian requests
         reqRanks = lock(control.locks.eulerianRequest) do
             # Exclude self from sending Eulerian requests
@@ -286,15 +292,21 @@ function init_async_evolve!(
 
         print("Evolve particles\n")
 
+        tCompute = time()
         lock(control.locks.chunkTransfers) do
             evolve_all_chunks!(
                 chunks, model, state, mesh, control, comm, executor
             )
         end
+        dtCompute = time() - tCompute
 
         tEvolve = time() - tStart
         global totalTime += tEvolve
-        print("Lagrangian solver: waiting time for evolve to finish = \
+        record_timing!("deviceCompute", dtCompute, iEvolve)
+        record_timing!("evolve", tEvolve, iEvolve)
+        print("Lagrangian solver: compute = \
+            $(round(dtCompute, sigdigits=4)) s; \
+            waiting time for evolve to finish = \
             $(round(tEvolve, sigdigits=4)) s; total waiting time = \
             $(round(totalTime, sigdigits=4)) s\n"
         )

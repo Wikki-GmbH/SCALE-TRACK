@@ -12,26 +12,20 @@
     See <http://www.gnu.org/licenses/> for details.
 =#
 
-# Case parameters of freeFall.  The library must be included before this file.
-#
-# One droplet released at rest near the top of a still 10 m column and falling
-# to the floor: drag and gravity only.  Neither evaporation nor convective
-# heat transfer is active, so the droplet keeps its mass, diameter and
-# temperature and the trajectory is the whole result.  Allrun runs the
-# OpenFOAM reference solver on the same case and greps the linear momentum of
-# both for comparison.
+# Case parameters of hotRoom, shared by the coupled setup and anything else
+# driving the same cloud.
+# The library must be included before this file.
 
 # Physical properties in SI units
 physics = HumidAirDroplet(
-    # Evaporation and heat transfer are submodel choices here, so the
-    # constants below keep their physical values and stay unused
-    NoEvaporation(),
-    NoHeatTransfer(),       # no convective exchange, as in the reference
-
+    Evaporation();
     μᶜ = 1.8e-5,            # continuous phase dynamic viscosity
     ρᶜ = 1.2,               # continuous phase density
     ρᵈ = 1000.0,            # disperse phase density
-    g = (0, 0, -9.81),      # gravitational acceleration
+    # The droplets are a few micrometres across, so they settle at well under
+    # a millimetre per second and simply follow the buoyant plume; the
+    # carrier feels gravity through constant/g either way
+    g = (0, 0, 0),          # gravitational acceleration
     Cₚᶜ = 1000,             # specific heat capacity of air
     Cₚᵈ = 4200,             # specific heat capacity of water
     Dᵈᶜ = 24.5e-6,          # diffusivity coefficient of water vapour in air
@@ -41,28 +35,35 @@ physics = HumidAirDroplet(
     SLH = 2.26471e6,        # specific latent heat of water vaporisation
 )
 
-nParcels = 1
+# The size of the whole cloud, not of one chunk: this is the case the cloud
+# is scaled up in, and it should stay the same size as the rank count varies.
+# The reference cloud is sized to match, its injection covering the whole
+# domain.
+nParcelsTotal = 20_000
 nChunks = 1
-nSubSteps = 10
+nSubSteps = 100
 
 # Mesh description; must be consistent with system/blockMeshDict
-nCellsPerDirection = [1, 1, 10]
+nCellsPerDirection = [32, 32, 32]
 origin = [0.0, 0.0, 0.0]
-ending = [1.0, 1.0, 10.0]
+ending = [1.0, 1.0, 1.0]
 
-# The droplet starts at rest in the top cell, where the reference cloud
-# injects
-function init_droplets!(chunk, mesh, executor, randSeed=19891, nChunksGlobal=1)
+# Droplets spread over the whole room, uniform in diameter over the range the
+# reference cloud injects.  The positions follow the space-filling curve, so
+# a chunk holds a connected region of the room and the carrier-field accesses
+# of its kernel stay local.
+function init_droplets!(chunk, mesh, executor, iChunk, nChunksGlobal)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
-
     fill!(c.boundingBox.min, 0.0)
     fill!(c.boundingBox.max, 0.0)
-    fill!(c.X, 0.5SCL*mesh.L.x + mesh.origin.x)
-    fill!(c.Y, 0.5SCL*mesh.L.y + mesh.origin.y)
-    fill!(c.Z, 0.95SCL*mesh.L.z + mesh.origin.z)
-    fill!(c.d, 500e-6SCL)
-    fill!(c.props.T, 293.15SCL)
+
+    init_hilbert_positions!(chunk, mesh, executor, iChunk, nChunksGlobal)
+
+    rng = default_rng(executor)
+    rand!(rng, c.d)
+    @. c.d = c.d*3e-6SCL + 2e-6SCL
+    fill!(c.props.T, 288.15SCL)
     fill!(c.U, 0.0)
     fill!(c.V, 0.0)
     fill!(c.W, 0.0)

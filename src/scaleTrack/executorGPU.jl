@@ -214,13 +214,11 @@ function init_bounding_boxes!(
         for chunk in chunks
             @async begin
                 hostChunkBb = reset_bounding_box!(chunk, executor)
-                # Launched with the backend's default configuration, as
-                # before the split into vendor backends
                 # Over the whole chunk, like the evolve kernel: every parcel
                 # has to reach the reduction, or the box is not the chunk's
-                state.bbKernel(
-                    chunk, executor;
-                    threads=state.threads, blocks=state.blocks
+                launch_kernel!(
+                    state.bbKernel, (chunk, executor),
+                    state.threads, state.blocks, executor
                 )
                 copy!(hostChunkBb, chunk.boundingBox)
                 determine!(
@@ -265,13 +263,12 @@ function evolve_all_chunks!(
 end
 
 ###############################################################################
-# Synchronous (blocking) evolve used by the sync driver (see
-# init_sync_tracking! in coupling.jl)
+# Synchronous (blocking) evolve used by the sync driver
 
 function sync_evolve!(chunk, model, eulerian, mesh, Δt, executor::GPU)
     # The device copy is cached and reused.  Rebuild it when the Eulerian
-    # container changes: every init_sync_tracking! allocates a fresh one, and
-    # a different model brings a different field set with it.
+    # container changes: each initialization allocates a fresh one, and a
+    # different model brings a different field set with it.
     if !haskey(reg, "syncDeviceEulerian") ||
             get(reg, "syncDeviceEulerianSrc", nothing) !== eulerian
         de = device_eulerian_type(model, executor)(eulerian.N)

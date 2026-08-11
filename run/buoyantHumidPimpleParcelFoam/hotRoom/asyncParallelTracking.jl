@@ -11,10 +11,10 @@
     See <http://www.gnu.org/licenses/> for details.
 =#
 
-# Case setup for the asynchronous particle tracking in the
-# freeFallCoolingEvaporation case: water droplets with heat and mass transfer
-# (HumidAirDroplet physics).  All tracking code lives in the library; this
-# script and the case parameters beside it are the whole of the case setup.
+# Case setup for the asynchronous particle tracking in the hotRoom case:
+# water droplets with heat and mass transfer (HumidAirDroplet physics) in a
+# buoyant plume.  All tracking code lives in the library; this script and the
+# case parameters beside it are the whole of the case setup.
 
 # The solver is built single precision (WM_PRECISION_OPTION=SP), which is the
 # library default: scalar = Float32, label = Int32
@@ -28,18 +28,28 @@ include(joinpath(@__DIR__, "caseSetup.jl"))
 
 init_async_tracking!(
     executor, physics;
-    nParcels,
+    nParcelsTotal,
     nChunks,
     nCellsPerDirection, origin, ending,
     nSubSteps,
 
     # Lagrangian decomposition by rank count; must evenly divide the cell
+    # counts.  Every rank count the case is run at needs an entry here.
     decompositions = Dict(
         1 => (1, 1, 1),
-        2 => (1, 1, 2)
+        2 => (2, 1, 1),
+        4 => (1, 2, 2),
+        8 => (2, 2, 2),
+        32 => (4, 4, 2),
+        64 => (4, 4, 4),
     ),
 
-    gcTimeStepInterval = 20,
+    # This is the case the cloud is scaled up in, so the timings are the
+    # point of running it
+    saveTimingsInterval = 10,
+
+    gcTimeStepInterval = 100,
+    extrapolator = ConstExtrapolator,
     initChunk! = init_droplets!,
 )
 

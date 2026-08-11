@@ -35,8 +35,8 @@ physics = HumidAirDroplet(
     RG = 8.3144598,         # gas constant
     SLH = 2.26471e6,        # specific latent heat of water vaporisation
 
-    # One tracked parcel stands for nParticle physical droplets; must match
-    # nParticle of the injection model in constant/cloudCloudProperties
+    # One tracked parcel stands for nParticle physical droplets; the reference
+    # cloud's injection has to use the same weight
     nParticle = 100,
 )
 
@@ -52,7 +52,7 @@ ending = [0.01, 0.01, 0.01]
 # The single droplet sits at the cell centre and does not move: with no
 # gravity and a carrier at rest the slip velocity stays zero, so drag
 # transfers no momentum
-function init_droplets!(chunk, mesh, executor, randSeed=19891)
+function init_droplets!(chunk, mesh, executor, randSeed=19891, nChunksGlobal=1)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 

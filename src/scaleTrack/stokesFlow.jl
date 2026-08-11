@@ -114,8 +114,7 @@ end
     return state0
 end
 
-# Accumulate (do not overwrite): several parcels may reside in the same
-# cell.  Matches the GPU variant, which accumulates via atomic_add!.
+# Accumulate (do not overwrite): several parcels may reside in the same cell
 # Returns the reset accumulator: the parcel state at the entry into the
 # new cell.
 @inline function flush_sources!(

@@ -105,6 +105,7 @@ end
 
 include("util.jl")
 include("mpiUtils.jl")
+include("hilbert.jl")
 include("types.jl")
 include("mesh.jl")
 include("control.jl")
@@ -123,7 +124,7 @@ include("asyncTracking.jl")
 include("vtkOutput.jl")
 include("coupling.jl")
 
-# The load timings are printed by the init_*_tracking! drivers: they run
-# after initComm, which silences the non-master ranks
+# The load timings are printed by the initialization drivers, which run after
+# the non-master ranks have been silenced
 reg["ΔtLoadModules"] = ΔtLoadModules
 reg["ΔtInitMethods"] = time() - ΔtLoadModules - tNow

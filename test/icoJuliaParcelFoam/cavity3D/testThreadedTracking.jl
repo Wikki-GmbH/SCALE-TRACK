@@ -1,4 +1,16 @@
 #=
+    SCALE-TRACK
+
+    Copyright (C) 2026 Sergey Lesnik
+
+    This file is part of SCALE-TRACK, which is free software: you can
+    redistribute it and/or modify it under the terms of the GNU General
+    Public License as published by the Free Software Foundation, either
+    version 3 of the License, or (at your option) any later version.
+    See <http://www.gnu.org/licenses/> for details.
+=#
+
+#=
     Regression test for the CPU particle tracking without OpenFOAM.
 
     Runs a few evolve steps on a frozen, seeded random velocity field and
