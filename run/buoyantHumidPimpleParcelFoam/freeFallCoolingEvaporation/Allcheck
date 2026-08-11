@@ -1,0 +1,12 @@
+#!/bin/sh
+cd "${0%/*}" || exit                                # Run from this directory
+#------------------------------------------------------------------------------
+# Turn the CSVs Allrun grepped out of the two solver logs into a pass/fail.
+# The quantities and tolerances of this case are in checks.jl; the comparison
+# itself is shared, in test/caseCompare.jl.  Exits non-zero on a failure, so
+# it can gate a run.
+#------------------------------------------------------------------------------
+
+exec julia --project=../../.. checks.jl "$@"
+
+#------------------------------------------------------------------------------
