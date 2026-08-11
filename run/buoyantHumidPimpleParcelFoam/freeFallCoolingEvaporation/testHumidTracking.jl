@@ -14,10 +14,14 @@
     Regression test for the HumidAirDroplet physics without OpenFOAM.
 
     Runs the synchronous driver on frozen, seeded random carrier fields and
-    writes reproducible checksums of the particle state and the sources.  The
-    golden file checks_humid.txt was produced by the identical procedure
-    driven through the pre-library tracking script of this case, so the
-    checksums must match it bitwise.
+    writes reproducible checksums of the particle state and the sources,
+    which must match the golden file checks_humid.txt bitwise.
+
+    The golden file is a regression guard on the physics as it stands: it
+    says the numbers have not moved since it was written, not that they are
+    right.  It began as a witness of the library port, having been produced
+    by this procedure driven through the pre-library script of this case, and
+    is regenerated whenever the physics is deliberately changed.
 
     Usage:
         julia --project=<env> testHumidTracking.jl checks_new.txt

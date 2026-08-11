@@ -37,7 +37,7 @@ physics = HumidAirDroplet(
     Mᵈ = 18.01528e-3,       # molar mass of water
     σᶜ = 72.8e-3,           # surface tension of water in air
     RG = 8.3144598,         # gas constant
-    SLH = 2264.71,          # specific latent heat of water vaporisation
+    SLH = 2.26471e6,        # specific latent heat of water vaporisation
 )
 
 nParcels = 1

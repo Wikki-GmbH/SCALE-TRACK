@@ -10,19 +10,13 @@
 #=
     HumidAirDroplet physics model: water droplets in humid air with two-way
     coupled momentum, thermal energy and vapour mass transfer.  The physics of
-    the buoyantHumidPimpleJuliaParcelFoam solver family, ported verbatim from
-    run/buoyantHumidPimpleParcelFoam/freeFallCoolingEvaporation:
+    the buoyant humid solver family:
 
     - Schiller-Naumann drag and buoyant gravity, implicit Euler integration
     - convective heat transfer via a Ranz-Marshall style Nusselt correlation
     - droplet evaporation/condensation from the vapour saturation ratio
       (Arden-Buck saturation pressure, Kelvin curvature effect), selectable
       via the EV type parameter: Evaporation or NoEvaporation
-
-    Ported as found (work in progress on the physics side): the source
-    extrapolation is disabled (default_extrapolator = NoExtrapolator) and the
-    initial carrier read clamps rhoV to non-negative values while the reread
-    after a cell change does not.
 =#
 
 struct Evaporation end
@@ -152,6 +146,15 @@ end
     return (dUTrans = ScalarVec(0, 0, 0), dhTrans = 0SCL, drhoVTrans = 0SCL)
 end
 
+# Water vapour saturation pressure in Pa (Arden-Buck equation) for a
+# temperature in K
+@inline function saturation_pressure(T)
+    TinC = scalar(T - 273.15SCL)
+    return scalar(611.21SCL*exp(
+        (18.678SCL - TinC/234.5SCL)*(TinC/(257.14SCL + TinC))
+    ))
+end
+
 # Droplet mass change by evaporation/condensation over one sub-step: returns
 # the new mass, the droplet temperature after the latent heat release, the
 # new diameter and the mass change
@@ -166,16 +169,15 @@ end
     SLH = model.SLH
     Cₚᵈ = model.Cₚᵈ
 
-    # temperature in °C
-    TᶜinC = scalar(Tᶜ-273.15SCL)
-
-    # Water vapour saturation pressure (Arden-Buck-Equation) in Pa
-    pvsat = scalar(611.21SCL*exp(
-        (18.678SCL - TᶜinC/234.5SCL)*(TᶜinC/(257.14SCL + TᶜinC)))
-    )
+    # Water vapour saturation pressure in Pa, of the carrier and at the
+    # droplet surface.  The two are at different temperatures, and the
+    # saturation is steeply temperature dependent
+    pvsatᶜ = saturation_pressure(Tᶜ)
+    pvsatᵈ = saturation_pressure(Tᵈ)
 
     # water vapour density at saturation in kg/m³
-    rhovsat = scalar(Mᵈ*pvsat/(RG*Tᶜ))
+    rhovsatᶜ = scalar(Mᵈ*pvsatᶜ/(RG*Tᶜ))
+    rhovsatᵈ = scalar(Mᵈ*pvsatᵈ/(RG*Tᵈ))
 
     # air molecular density (43.04*Tref*p/(T*pref)) in mol/m³
     rhoMolAir = 43.04SCL*283.15SCL/(Tᶜ*1.01325SCL)
@@ -184,17 +186,18 @@ end
     pv = rhoVᶜ/(rhoMolAir*Mᵈ)*1e5SCL
 
     # Saturation ratio of water vapour in continuous phase
-    Sinf = pv/pvsat
+    Sinf = pv/pvsatᶜ
 
     # Saturation ratio of water vapour at particle surface
     # (Only Kelvin/curvature effect, no Raoult/solute effect)
     Ssfc = scalar(exp(4SCL*Mᵈ*σᶜ/(RG*Tᵈ*ρᵈ*⌀)))
 
-    # Integration over time using semi-implicit Euler
+    # Integration over time using semi-implicit Euler, the driving force
+    # being the vapour density of the carrier less the one at the surface
     # (min. particle mass equiv. to ⌀~1µm)
     mᵈNew = max(
         5e-16SCL,
-        scalar(mᵈ + 2SCL*π*Dᵈᶜ*⌀*rhovsat*(Sinf - Ssfc)*Δt)
+        scalar(mᵈ + 2SCL*π*Dᵈᶜ*⌀*(rhovsatᶜ*Sinf - rhovsatᵈ*Ssfc)*Δt)
     )
     Δmᵈ = mᵈNew - mᵈ
 
@@ -240,7 +243,10 @@ end
     ΔTᵈ = scalar((acp - bcp*Tᵈ)*ΔtEff)
     TᵈNew = Tᵈ + ΔTᵈ
 
-    return (TᵈNew, acc.dhTrans - Cₚᵈ*(mᵈNew*TᵈNew - mᵈ*Tᵈ))
+    # The carrier receives the convective heat alone.  Mass leaving the
+    # droplet takes its enthalpy with it into the vapour, which is not part
+    # of this exchange
+    return (TᵈNew, acc.dhTrans - Cₚᵈ*mᵈNew*ΔTᵈ)
 end
 
 @inline function heat_transfer(
