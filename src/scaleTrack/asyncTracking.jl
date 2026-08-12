@@ -164,8 +164,8 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, executor)
         sourceRreqs, sourceBuffers = receive_sources(inqRanks, comm, eulerian)
         lock(control.locks.eulerianComms[comm.jlRank]) do
             # The sources of this step are the contributions about to be
-            # received and nothing else, so the fields are cleared before
-            # they are accumulated into.
+            # received and nothing else, so the fields are cleared before they
+            # are accumulated into.
             reset_sources!(eulerian[comm.jlRank])
             accumulate_sources!(eulerian, sourceRreqs, sourceBuffers, comm)
         end
@@ -366,6 +366,7 @@ end
 # Drives the asynchronous evolve from the OpenFOAM time loop: pure lock/event
 # logic, shared by all executors and by masters and slaves
 function evolve!(control, executor)
+    tWait = time()
     iStep = reg["timeStep"]
     unlock(control.locks.eulerianComms[comm.jlRank])
 
@@ -378,6 +379,7 @@ function evolve!(control, executor)
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
         lock(control.locks.eulerianComms[comm.jlRank])
+        record_timing!("wait", time() - tWait, iStep)
         return nothing
     elseif iStep > 2
         # The sources awaited here are the ones the previous step set off,
@@ -390,5 +392,6 @@ function evolve!(control, executor)
 
     wait(control.events.U_copied)
     lock(control.locks.eulerianComms[comm.jlRank])
+    record_timing!("wait", time() - tWait, iStep)
     return nothing
 end

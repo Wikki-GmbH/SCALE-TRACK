@@ -27,18 +27,26 @@ end
 #=
     Coupling-step timings.
 
-    Four times are recorded per coupling step, all of them wall clock and all
+    Five times are recorded per coupling step, all of them wall clock and all
     of them measured on the rank that records them:
 
     step            the whole step, from one call of the coupling to the next
     euler           the part of it spent in the Eulerian solver, i.e. outside
                     the tracking
+    wait            the rest of it: what the solver spends blocked in the
+                    coupling, waiting for the tracking of the step to reach
+                    the point where the fields may be exchanged
     evolve          how long the tracking took, communication included
     deviceCompute   the compute alone, without the communication around it
 
-    Whether the tracking is actually paid for is the point of collecting
-    both step and evolve: when the coupling does its job, evolve overlaps
-    the Eulerian solve and the step costs no more than the solver alone.
+    So step = euler + wait, and the two phases are separable rather than
+    inferred: euler is the Eulerian phase and deviceCompute the Lagrangian
+    one, each without the synchronization between them, which is what wait
+    carries.  Whether the tracking is actually paid for is then read off
+    directly -- when the coupling does its job the tracking overlaps the
+    Eulerian solve, wait stays small and the step costs no more than the
+    solver alone; where wait approaches deviceCompute, it does not overlap at
+    all.
 
     Note that step and euler are recorded where the solver calls in, while
     evolve and deviceCompute are recorded in the tracking task, so the
@@ -51,7 +59,7 @@ end
 # rather than the per-step cost being measured.
 const nSkipTimingSteps = 2
 
-const timingNames = ("step", "euler", "evolve", "deviceCompute")
+const timingNames = ("step", "euler", "wait", "evolve", "deviceCompute")
 
 function init_timings!(writeInterval)
     reg["timingsWriteInterval"] = writeInterval
@@ -133,6 +141,6 @@ macro cloudSummary(ex)
     CloudLogFrequency > 0 ? esc(ex) : nothing
 end
 
-# Whether this coupling step is a reporting one.  Only ever called from
-# within @cloudSummary, so the frequency is known to be positive.
+# Whether this coupling step is a reporting one.  The frequency is positive
+# here; a zero frequency is dropped before this is reached.
 cloud_summary_due(step) = (step % CloudLogFrequency == 0)
