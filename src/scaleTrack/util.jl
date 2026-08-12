@@ -85,12 +85,36 @@ function sample_std(v)
     return sqrt(sum(x -> (x - m)^2, v)/(length(v) - 1))
 end
 
+#=
+    Write the samples the summary is made of, one row per coupling step.
+
+    The summary alone cannot say how well a mean is resolved.  A coupling
+    whose tracking outlasts the Eulerian solve alternates -- the solver waits
+    for a whole tracking on one step and for nothing on the next -- and the
+    standard deviation of such a series measures the alternation, not the
+    precision of its mean.  That needs the samples: a confidence interval
+    taken over batches of steps, the batch a multiple of the period.
+=#
+function save_samples(comm, series, nSteps)
+    open("samples_np" * lpad(string(comm.size), 4, '0'), "w") do io
+        println(io, join(["iStep"; collect(timingNames)], " "))
+        for i in 1:nSteps
+            println(io, join(
+                [i + nSkipTimingSteps;
+                 [round(v[i], sigdigits=6) for v in series]], " "
+            ))
+        end
+    end
+    return nothing
+end
+
 # Write the timing summary of the run so far.  One row, so that the files of
 # a scaling series concatenate into a table.
 function save_timings(comm)
     # The counts differ between the pairs, so compare like with like
     nSteps = minimum(length(reg["dt_"*n]) for n in timingNames)
     series = [first(reg["dt_"*n], nSteps) for n in timingNames]
+    save_samples(comm, series, nSteps)
 
     open("stats_np" * lpad(string(comm.size), 4, '0'), "w") do io
         println(io, join(
