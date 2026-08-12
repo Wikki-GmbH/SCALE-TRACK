@@ -138,9 +138,14 @@ end
 # Eulerian-serving slave loop: pure MPI/event logic, shared by all executors
 # and models
 function init_async_evolve!(eulerian, control, comm::Comm{Slave}, executor)
+    # Counts the steps this task has served
+    iEvolve = 0
+
     # The infinite loop to be run inside an asynchronous task that is
     # specifically yielded at "lock" and "wait"
     while true
+        iEvolve += 1
+
         # Non-blocking consensus for processing Eulerian requests
         barrierFlag = Ref{Cint}(0)
         probeFlag = Ref{Cint}(0)
@@ -174,6 +179,7 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, executor)
         empty!(inqRanks)
 
         notify(control.events.S_copied)
+        iEvolve == 1 && wait(control.events.U_locked)
     end
     return nothing
 end
@@ -374,6 +380,7 @@ function init_async_evolve!(
         record_timing!("exchangeSource", time() - tExchangeSource, iEvolve)
 
         notify(control.events.S_copied)
+        iEvolve == 1 && wait(control.events.U_locked)
     end
     return nothing
 end
@@ -394,6 +401,7 @@ function evolve!(control, executor)
         notify(control.events.Eulerian_computed)
         wait(control.events.S_copied)
         lock(control.locks.eulerianComms[comm.jlRank])
+        notify(control.events.U_locked)
         record_timing!("wait", time() - tWait, iStep)
         return nothing
     elseif iStep > 2

@@ -22,12 +22,23 @@ function Locks(nEulerian)
     Locks(ReentrantLock(), eulerianComms, ReentrantLock())
 end
 
+#=
+    The events the tracking task and the solver hand over on.
+
+    U_copied and S_copied are raised by the tracking, Eulerian_computed by the
+    solver, once per coupling step each.  U_locked belongs to the synchronous
+    first step alone: it holds the tracking at the end of that step until the
+    solver has taken its own Eulerian lock again, so that the tracking cannot
+    start serving the second step against fields the solver has not yet
+    claimed.  After that step the pipeline runs on the other three.
+=#
 struct Events
     U_copied::Event
+    U_locked::Event
     S_copied::Event
     Eulerian_computed::Event
 
-    Events() = new(Event(true), Event(true), Event(true))
+    Events() = new(Event(true), Event(true), Event(true), Event(true))
 end
 
 # Extrapolation of sources
