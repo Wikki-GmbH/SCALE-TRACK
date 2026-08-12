@@ -299,9 +299,15 @@ function init_async_evolve!(
 
         record_timing!("copyCarrier", time() - tCopyCarrier, iEvolve)
 
-        notify(control.events.U_copied)
+        # Nothing in this loop writes to stdout.  A redirected stdout is served
+        # by libuv on the thread that runs the event loop, which is the thread
+        # sitting in the Eulerian solver, so a write from here does not
+        # complete until the solver returns -- one print costs a whole Eulerian
+        # phase and the kernel launch waits behind it.  What the tracking has
+        # to report is recorded in the timing series and reported by the
+        # solver.
 
-        print("Evolve particles\n")
+        notify(control.events.U_copied)
 
         tCompute = time()
         lock(control.locks.chunkTransfers) do
@@ -315,12 +321,6 @@ function init_async_evolve!(
         global totalTime += tEvolve
         record_timing!("deviceCompute", dtCompute, iEvolve)
         record_timing!("evolve", tEvolve, iEvolve)
-        print("Lagrangian solver: compute = \
-            $(round(dtCompute, sigdigits=4)) s; \
-            waiting time for evolve to finish = \
-            $(round(tEvolve, sigdigits=4)) s; total waiting time = \
-            $(round(totalTime, sigdigits=4)) s\n"
-        )
 
         tWaitEuler = time()
         wait(control.events.Eulerian_computed)

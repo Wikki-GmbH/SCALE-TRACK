@@ -78,6 +78,19 @@ function record_timing!(name, dt, iStep)
     return nothing
 end
 
+# One line per step on what the tracking cost and what the solver waited for
+# it, from the series rather than from the tracking task itself
+function report_evolve()
+    dtCompute = reg["dt_deviceCompute"]
+    dtWait = reg["dt_wait"]
+    (isempty(dtCompute) || isempty(dtWait)) && return nothing
+    println("Lagrangian solver: compute = ",
+        round(dtCompute[end], sigdigits=4), " s; solver waited = ",
+        round(dtWait[end], sigdigits=4), " s")
+    flush(stdout)
+    return nothing
+end
+
 sample_mean(v) = isempty(v) ? 0.0 : sum(v)/length(v)
 
 function sample_std(v)

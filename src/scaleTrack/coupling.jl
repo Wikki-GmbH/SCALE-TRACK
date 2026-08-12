@@ -189,6 +189,12 @@ function evolve_cloud(Δt, ::AsyncMode)
     global tStart = time()
     evolve!(control, executor)
 
+    # Reported here rather than by the tracking task, whose writes to a
+    # redirected stdout would not complete until this thread came back.  The
+    # tracking figure is the last one it recorded, so it trails this step by
+    # whatever the coupling has in flight.
+    comm.isMaster && report_evolve()
+
     comm.isMaster && timings_write_due(iStep) && save_timings(comm)
     reg["tEulerStart"] = time()
 
