@@ -186,7 +186,6 @@ function evolve_cloud(Δt, ::AsyncMode)
         end
     end
 
-    global tStart = time()
     evolve!(control, executor)
 
     # Reported here rather than by the tracking task, whose writes to a

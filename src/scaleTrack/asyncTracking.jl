@@ -316,11 +316,7 @@ function init_async_evolve!(
             )
         end
         dtCompute = time() - tCompute
-
-        tEvolve = time() - tStart
-        global totalTime += tEvolve
         record_timing!("deviceCompute", dtCompute, iEvolve)
-        record_timing!("evolve", tEvolve, iEvolve)
 
         tWaitEuler = time()
         wait(control.events.Eulerian_computed)

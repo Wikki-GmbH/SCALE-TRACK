@@ -45,12 +45,12 @@ const nSkipTimingSteps = 2
     so that step = euler + wait, and the Eulerian phase is separable from the
     synchronization rather than inferred from it.
 
-    The others are taken in the tracking task: evolve is the whole of one
-    evolve and the remaining seven are its phases, in the order they run.
-    deviceCompute is the compute alone, and it is the only phase that can
-    overlap the Eulerian solve -- the solver cannot return until the carrier
-    fields of the next evolve are negotiated and copied, and it cannot pass
-    its next call until the sources of this one are copied and exchanged.
+    The others are taken in the tracking task, and are the phases of one
+    evolve in the order they run.  deviceCompute is the compute alone, and it
+    is the only phase that can overlap the Eulerian solve -- the solver cannot
+    return until the carrier fields of the next evolve are negotiated and
+    copied, and it cannot pass its next call until the sources of this one are
+    copied and exchanged.
     waitEuler is the mirror of wait, the tracking waiting for the solver,
     which is where a coupling that overlaps well spends its time.
 
@@ -58,7 +58,7 @@ const nSkipTimingSteps = 2
     whatever is in flight; the summary truncates them to a common length.
 =#
 const timingNames = (
-    "step", "euler", "wait", "evolve", "deviceCompute",
+    "step", "euler", "wait", "deviceCompute",
     "negotiate", "copyCarrier", "waitEuler", "copySource", "exchangeSource"
 )
 
