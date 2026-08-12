@@ -6,8 +6,7 @@
     Copyright (C) 2024-2026 Henrik Rusche
 =#
 
-# CUDA backend: the vendor primitives used by the shared GPU executor
-# (executorGPU.jl).
+# CUDA backend: the vendor primitives the shared GPU executor dispatches to.
 
 GPU() = CUDAGPU()
 
@@ -55,6 +54,45 @@ end
 @inline function atomic_replace!(arr, i, expected, desired, ::CUDAGPU)
     old = CUDA.atomic_cas!(pointer(arr, i), expected, desired)
     return old, old === expected
+end
+
+# CUDA offers no atomic minimum or maximum for floating point, so the
+# comparison runs on the bit pattern: over the non-negative floats the signed
+# integer order agrees with the float order, and over the negative ones the
+# unsigned order reverses it.  The sign of the candidate therefore selects
+# both the integer type and the operation.
+@inline ordered_signed(x::Float32) = reinterpret(Int32, x)
+@inline ordered_signed(x::Float64) = reinterpret(Int64, x)
+@inline ordered_unsigned(x::Float32) = reinterpret(UInt32, x)
+@inline ordered_unsigned(x::Float64) = reinterpret(UInt64, x)
+
+@inline ordered_signed_ptr(ptr::Core.LLVMPtr{Float32, A}) where {A} =
+    reinterpret(Core.LLVMPtr{Int32, A}, ptr)
+@inline ordered_signed_ptr(ptr::Core.LLVMPtr{Float64, A}) where {A} =
+    reinterpret(Core.LLVMPtr{Int64, A}, ptr)
+@inline ordered_unsigned_ptr(ptr::Core.LLVMPtr{Float32, A}) where {A} =
+    reinterpret(Core.LLVMPtr{UInt32, A}, ptr)
+@inline ordered_unsigned_ptr(ptr::Core.LLVMPtr{Float64, A}) where {A} =
+    reinterpret(Core.LLVMPtr{UInt64, A}, ptr)
+
+@inline function atomic_min!(arr, i, val, ::CUDAGPU)
+    ptr = pointer(arr, i)
+    if val >= zero(val)
+        CUDA.atomic_min!(ordered_signed_ptr(ptr), ordered_signed(val))
+    else
+        CUDA.atomic_max!(ordered_unsigned_ptr(ptr), ordered_unsigned(val))
+    end
+    return nothing
+end
+
+@inline function atomic_max!(arr, i, val, ::CUDAGPU)
+    ptr = pointer(arr, i)
+    if val >= zero(val)
+        CUDA.atomic_max!(ordered_signed_ptr(ptr), ordered_signed(val))
+    else
+        CUDA.atomic_min!(ordered_unsigned_ptr(ptr), ordered_unsigned(val))
+    end
+    return nothing
 end
 
 compile_kernel(f, args, ::CUDAGPU) = @cuda launch=false f(args...)
