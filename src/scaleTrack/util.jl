@@ -24,11 +24,16 @@ function timing(t, s)
     return time()
 end
 
-#=
-    Coupling-step timings.
+# Steps left out of the statistics.  The first ones carry the compilation of
+# the kernels and the first-touch of the buffers, which are startup costs
+# rather than the per-step cost being measured.
+const nSkipTimingSteps = 2
 
-    Five times are recorded per coupling step, all of them wall clock and all
-    of them measured on the rank that records them:
+#=
+    The times recorded per coupling step, all of them wall clock and all of
+    them measured on the rank that records them.
+
+    Three are taken where the solver calls into the coupling:
 
     step            the whole step, from one call of the coupling to the next
     euler           the part of it spent in the Eulerian solver, i.e. outside
@@ -36,30 +41,26 @@ end
     wait            the rest of it: what the solver spends blocked in the
                     coupling, waiting for the tracking of the step to reach
                     the point where the fields may be exchanged
-    evolve          how long the tracking took, communication included
-    deviceCompute   the compute alone, without the communication around it
 
-    So step = euler + wait, and the two phases are separable rather than
-    inferred: euler is the Eulerian phase and deviceCompute the Lagrangian
-    one, each without the synchronization between them, which is what wait
-    carries.  Whether the tracking is actually paid for is then read off
-    directly -- when the coupling does its job the tracking overlaps the
-    Eulerian solve, wait stays small and the step costs no more than the
-    solver alone; where wait approaches deviceCompute, it does not overlap at
-    all.
+    so that step = euler + wait, and the Eulerian phase is separable from the
+    synchronization rather than inferred from it.
 
-    Note that step and euler are recorded where the solver calls in, while
-    evolve and deviceCompute are recorded in the tracking task, so the
-    counts of the two pairs differ by whatever is in flight -- the summary
-    truncates them to a common length.
+    The others are taken in the tracking task: evolve is the whole of one
+    evolve and the remaining seven are its phases, in the order they run.
+    deviceCompute is the compute alone, and it is the only phase that can
+    overlap the Eulerian solve -- the solver cannot return until the carrier
+    fields of the next evolve are negotiated and copied, and it cannot pass
+    its next call until the sources of this one are copied and exchanged.
+    waitEuler is the mirror of wait, the tracking waiting for the solver,
+    which is where a coupling that overlaps well spends its time.
+
+    The two groups are recorded in different tasks, so their counts differ by
+    whatever is in flight; the summary truncates them to a common length.
 =#
-
-# Steps left out of the statistics.  The first ones carry the compilation of
-# the kernels and the first-touch of the buffers, which are startup costs
-# rather than the per-step cost being measured.
-const nSkipTimingSteps = 2
-
-const timingNames = ("step", "euler", "wait", "evolve", "deviceCompute")
+const timingNames = (
+    "step", "euler", "wait", "evolve", "deviceCompute",
+    "negotiate", "copyCarrier", "waitEuler", "copySource", "exchangeSource"
+)
 
 function init_timings!(writeInterval)
     reg["timingsWriteInterval"] = writeInterval

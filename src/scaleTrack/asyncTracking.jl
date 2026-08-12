@@ -210,6 +210,8 @@ function init_async_evolve!(
     while true
         iEvolve += 1
 
+        tNegotiate = time()
+
         # Non-blocking consensus for processing Eulerian requests
         reqRanks = lock(control.locks.eulerianRequest) do
             # Exclude self from sending Eulerian requests
@@ -272,6 +274,9 @@ function init_async_evolve!(
             unlock(control.locks.eulerianComms[iRank₁])
         end
 
+        record_timing!("negotiate", time() - tNegotiate, iEvolve)
+        tCopyCarrier = time()
+
         # Copy all required Eulerian carrier fields to the compute copies
         allReqRanks₁ =
             Iterators.map(x -> x+1, comm.member.requiredEulerianRanks)
@@ -287,6 +292,8 @@ function init_async_evolve!(
         end
 
         empty!(comm.member.requiredEulerianRanks)
+
+        record_timing!("copyCarrier", time() - tCopyCarrier, iEvolve)
 
         notify(control.events.U_copied)
 
@@ -311,7 +318,10 @@ function init_async_evolve!(
             $(round(totalTime, sigdigits=4)) s\n"
         )
 
+        tWaitEuler = time()
         wait(control.events.Eulerian_computed)
+        record_timing!("waitEuler", time() - tWaitEuler, iEvolve)
+        tCopySource = time()
 
         # Correct and estimate the source
         lock(control.locks.eulerianComms[comm.jlRank]) do
@@ -323,6 +333,9 @@ function init_async_evolve!(
             end
             estimate_source!(eulerian[comm.jlRank], control.extrapolator)
         end
+
+        record_timing!("copySource", time() - tCopySource, iEvolve)
+        tExchangeSource = time()
 
         sourceRreqs, sourceBuffers = receive_sources(inqRanks, comm, eulerian)
 
@@ -357,6 +370,8 @@ function init_async_evolve!(
         end
 
         empty!(inqRanks)
+
+        record_timing!("exchangeSource", time() - tExchangeSource, iEvolve)
 
         notify(control.events.S_copied)
     end
