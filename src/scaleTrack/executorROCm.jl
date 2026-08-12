@@ -60,14 +60,14 @@ scalar_set!(arr, i, v, ::ROCmGPU) = AMDGPU.@allowscalar arr[i] = v
 @inline function atomic_add_component!(field, cellI, comp, val, ::ROCmGPU)
     ptr = reinterpret(ScalarPtr, pointer(field, cellI))
     UnsafeAtomics.modify!(
-        ptr + (comp - 1LBL)*sizeof(scalar), +, val, UnsafeAtomics.seq_cst
+        ptr + (comp - 1LBL)*sizeof(scalar), +, val, UnsafeAtomics.monotonic
     )
     return nothing
 end
 
 @inline function atomic_add!(field, cellI, val, ::ROCmGPU)
     UnsafeAtomics.modify!(
-        pointer(field, cellI), +, val, UnsafeAtomics.seq_cst
+        pointer(field, cellI), +, val, UnsafeAtomics.monotonic
     )
     return nothing
 end
@@ -81,16 +81,16 @@ end
     return old, success
 end
 
-# ROCm has atomic min/max, so the compare-and-swap loop of the generic
-# implementation is not needed.  Addressing through the pointer keeps this
-# working on shared memory too, where the address space differs.
+# ROCm has atomic min/max, so no compare-and-swap loop is needed here.
+# Addressing through the pointer keeps this working on shared memory too,
+# where the address space differs.
 @inline function atomic_min!(arr, i, val, ::ROCmGPU)
-    UnsafeAtomics.modify!(pointer(arr, i), min, val, UnsafeAtomics.seq_cst)
+    UnsafeAtomics.modify!(pointer(arr, i), min, val, UnsafeAtomics.monotonic)
     return nothing
 end
 
 @inline function atomic_max!(arr, i, val, ::ROCmGPU)
-    UnsafeAtomics.modify!(pointer(arr, i), max, val, UnsafeAtomics.seq_cst)
+    UnsafeAtomics.modify!(pointer(arr, i), max, val, UnsafeAtomics.monotonic)
     return nothing
 end
 
