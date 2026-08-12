@@ -396,13 +396,17 @@ function init_async_tracking!(
         iChunk₀ = nChunks*comm.member.hostRank
         @show nPerChunk nChunksGlobal
 
-        global chunks = Vector{Chunk}(undef, nChunks)
-        for i in eachindex(chunks)
-            chunks[i] =
-                allocate_chunk(comm, executor, model, nPerChunk, nSubSteps)
-            init_props!(chunks[i], model)
-            initChunk!(chunks[i], mesh, executor, iChunk₀ + i, nChunksGlobal)
-        end
+        # Built by comprehension, so that the element type is the concrete
+        # chunk type of this executor and model: the evolve loop then reaches
+        # a chunk without dispatching on its type at every step
+        global chunks = [
+            let c = allocate_chunk(comm, executor, model, nPerChunk, nSubSteps)
+                init_props!(c, model)
+                initChunk!(c, mesh, executor, iChunk₀ + i, nChunksGlobal)
+                c
+            end
+            for i in 1:nChunks
+        ]
         tNow = timing(tNow, "Initialized particle chunks")
 
         # Allocate Eulerian for all ranks on tracking masters

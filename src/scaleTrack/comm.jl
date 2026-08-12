@@ -48,10 +48,10 @@ struct Comm{T<:CommMember}
     communicator::MPI.Comm
     isMaster::Bool
     isHost::Bool
-    rank::Integer
-    jlRank::Integer
-    masterRank::Integer
-    size::Integer
+    rank::Int64
+    jlRank::Int64
+    masterRank::Int64
+    size::Int64
 end
 
 function Comm(member, communicator)
