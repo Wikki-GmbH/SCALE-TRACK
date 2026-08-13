@@ -1,0 +1,46 @@
+# The checks that need neither OpenFOAM nor a GPU.
+#
+# That is the whole of the pure-Julia suite: the verification checks against
+# analytic references and the golden-checksum regressions.  The coupled
+# comparisons against the reference solver are not here and cannot be -- they
+# need an OpenFOAM build and, for the production executor, a device.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Library suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.10'
+      - uses: julia-actions/cache@v2
+      - name: Instantiate the shared environment
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+      - name: Run the checks
+        run: julia --project=. test/runtests.jl
+
+  format:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.10'
+      - name: Check the sources against .JuliaFormatter.toml
+        run: |
+          julia -e '
+            using Pkg
+            Pkg.add(name = "JuliaFormatter", version = "2")
+            using JuliaFormatter
+            if !format(".", overwrite = false)
+                @error "Sources are not formatted; run: julia -e \
+                    \"using JuliaFormatter; format(\\\".\\\")\""
+                exit(1)
+            end'
