@@ -129,14 +129,14 @@ function scan(
     for s in 0:maxShift
         n, d = difference(a, b, s, mode; last = last, lastB = lastB)
         println("    ", lpad(s, 5), " ", lpad(n, 6), " ",
-                lpad(round(d, sigdigits = 6), 18), " ", unit)
+            lpad(round(d, sigdigits = 6), 18), " ", unit)
         if d < best
             best = d
             bestShift = s
         end
     end
     println("    best: shift ", bestShift, " at ",
-            round(best, sigdigits = 6), " ", unit)
+        round(best, sigdigits = 6), " ", unit)
     return best, bestShift
 end
 
@@ -165,7 +165,7 @@ function finish()
     failed = 0
     for (label, value, tol, ok) in VERDICTS
         println("    ", rpad(label, 34), rpad(round(value, sigdigits = 6), 14),
-                "tol ", rpad(tol, 10), ok ? "PASS" : "FAIL")
+            "tol ", rpad(tol, 10), ok ? "PASS" : "FAIL")
         ok || (failed += 1)
     end
     println()
@@ -182,7 +182,7 @@ function require(files...)
     end
     println()
     println("  Nothing to compare.  Run ./Allrun first",
-            " (Allclean removes the CSVs).")
+        " (Allclean removes the CSVs).")
     exit(2)
 end
 

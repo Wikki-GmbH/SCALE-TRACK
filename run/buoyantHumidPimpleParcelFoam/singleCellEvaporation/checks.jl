@@ -22,9 +22,9 @@ include(joinpath(@__DIR__, "../../../test/caseCompare.jl"))
 quantities = [
     Quantity("parcel temperature", "Tp_OF.csv", "Tp_ST.csv", :abs, 0.5, "K"),
     Quantity("parcel mass, relative",
-             "H2OPMass_OF.csv", "H2OPMass_ST.csv", :rel, 1e-3),
+        "H2OPMass_OF.csv", "H2OPMass_ST.csv", :rel, 1e-3),
     Quantity("vapour mass, relative",
-             "H2OVMass_OF.csv", "H2OVMass_ST.csv", :rel, 5e-4),
+        "H2OVMass_OF.csv", "H2OVMass_ST.csv", :rel, 5e-4),
 ]
 
 banner("singleCellEvaporation")

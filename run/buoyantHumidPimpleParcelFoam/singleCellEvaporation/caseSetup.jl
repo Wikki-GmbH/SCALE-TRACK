@@ -54,7 +54,13 @@ ending = [0.01, 0.01, 0.01]
 # The single droplet sits at the cell centre and does not move: with no
 # gravity and a carrier at rest the slip velocity stays zero, so drag
 # transfers no momentum
-function init_droplets!(chunk, mesh, executor, randSeed=19891, nChunksGlobal=1)
+function init_droplets!(
+    chunk,
+    mesh,
+    executor,
+    randSeed = 19891,
+    nChunksGlobal = 1
+)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 

@@ -16,7 +16,7 @@ if !isdefined(Main, :DebugComm)
 end
 
 function timing(t, s)
-    dt = round(time() - t, sigdigits=4)
+    dt = round(time() - t, sigdigits = 4)
     println(s, " in ", dt, " s")
 
     # Invoke flush to ensure immediate printing even when executed within C code
@@ -67,14 +67,14 @@ function init_timings!(writeInterval)
     reg["tStepStart"] = time()
     reg["tEulerStart"] = time()
     for n in timingNames
-        reg["dt_"*n] = Float64[]
+        reg["dt_" * n] = Float64[]
     end
     return nothing
 end
 
 # Record one sample, unless the step is still one of the skipped ones
 function record_timing!(name, dt, iStep)
-    iStep > nSkipTimingSteps && push!(reg["dt_"*name], dt)
+    iStep > nSkipTimingSteps && push!(reg["dt_" * name], dt)
     return nothing
 end
 
@@ -85,8 +85,8 @@ function report_evolve()
     dtWait = reg["dt_wait"]
     (isempty(dtCompute) || isempty(dtWait)) && return nothing
     println("Lagrangian solver: compute = ",
-        round(dtCompute[end], sigdigits=4), " s; solver waited = ",
-        round(dtWait[end], sigdigits=4), " s")
+        round(dtCompute[end], sigdigits = 4), " s; solver waited = ",
+        round(dtWait[end], sigdigits = 4), " s")
     flush(stdout)
     return nothing
 end
@@ -113,10 +113,13 @@ function save_samples(comm, series, nSteps)
     open("samples_np" * lpad(string(comm.size), 4, '0'), "w") do io
         println(io, join(["iStep"; collect(timingNames)], " "))
         for i in 1:nSteps
-            println(io, join(
-                [i + nSkipTimingSteps;
-                 [round(v[i], sigdigits=6) for v in series]], " "
-            ))
+            println(
+                io,
+                join(
+                    [i + nSkipTimingSteps;
+                        [round(v[i], sigdigits = 6) for v in series]], " "
+                )
+            )
         end
     end
     return nothing
@@ -126,20 +129,25 @@ end
 # a scaling series concatenate into a table.
 function save_timings(comm)
     # The counts differ between the pairs, so compare like with like
-    nSteps = minimum(length(reg["dt_"*n]) for n in timingNames)
-    series = [first(reg["dt_"*n], nSteps) for n in timingNames]
+    nSteps = minimum(length(reg["dt_" * n]) for n in timingNames)
+    series = [first(reg["dt_" * n], nSteps) for n in timingNames]
     save_samples(comm, series, nSteps)
 
     open("stats_np" * lpad(string(comm.size), 4, '0'), "w") do io
-        println(io, join(
-            ["nTimeSteps";
-             ["t" * uppercasefirst(n) * s
-              for s in ("Total", "Mean", "Std") for n in timingNames]
-            ], " "
-        ))
+        println(
+            io,
+            join(
+                ["nTimeSteps";
+                    [
+                        "t" * uppercasefirst(n) * s
+                        for s in ("Total", "Mean", "Std") for n in timingNames
+                    ]
+                ], " "
+            )
+        )
         print(io, nSteps)
         for f in (sum, sample_mean, sample_std), v in series
-            print(io, " ", round(f(v), sigdigits=6))
+            print(io, " ", round(f(v), sigdigits = 6))
         end
         println(io)
     end
@@ -160,7 +168,7 @@ macro debugCommPrintln(ex)
         msg = :(Main.Base.inferencebarrier(Main.Base.string)(
             "[", comm.rank, "] ", $(esc(ex)), "\n"
         ))
-        return :( print($msg) )
+        return :(print($msg))
     end
     return nothing
 end

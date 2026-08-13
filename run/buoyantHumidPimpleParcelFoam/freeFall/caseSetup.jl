@@ -27,7 +27,6 @@ physics = HumidAirDroplet(
     # constants below keep their physical values and stay unused
     NoEvaporation(),
     NoHeatTransfer(),       # no convective exchange, as in the reference
-
     μᶜ = 1.8e-5,            # continuous phase dynamic viscosity
     ρᶜ = 1.2,               # continuous phase density
     ρᵈ = 1000.0,            # disperse phase density
@@ -52,7 +51,13 @@ ending = [1.0, 1.0, 10.0]
 
 # The droplet starts at rest in the top cell, where the reference cloud
 # injects
-function init_droplets!(chunk, mesh, executor, randSeed=19891, nChunksGlobal=1)
+function init_droplets!(
+    chunk,
+    mesh,
+    executor,
+    randSeed = 19891,
+    nChunksGlobal = 1
+)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 

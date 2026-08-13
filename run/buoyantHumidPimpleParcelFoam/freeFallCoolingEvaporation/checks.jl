@@ -24,14 +24,14 @@ include(joinpath(@__DIR__, "../../../test/caseCompare.jl"))
 
 quantities = [
     Quantity("carrier temperature",
-             "minmaxT_OF.csv", "minmaxT_ST.csv", :abs, 0.05, "K"),
+        "minmaxT_OF.csv", "minmaxT_ST.csv", :abs, 0.05, "K"),
     Quantity("carrier vapour density",
-             "minmaxrhoV_OF.csv", "minmaxrhoV_ST.csv", :abs, 5e-5, "kg/m^3"),
+        "minmaxrhoV_OF.csv", "minmaxrhoV_ST.csv", :abs, 5e-5, "kg/m^3"),
     Quantity("carrier momentum, of peak",
-             "integralMomentum_OF.csv", "integralMomentum_ST.csv",
-             :peak, 0.03),
+        "integralMomentum_OF.csv", "integralMomentum_ST.csv",
+        :peak, 0.03),
     Quantity("vapour mass, relative",
-             "integralrhoV_OF.csv", "integralrhoV_ST.csv", :rel, 5e-4),
+        "integralrhoV_OF.csv", "integralrhoV_ST.csv", :rel, 5e-4),
 ]
 
 banner("freeFallCoolingEvaporation")

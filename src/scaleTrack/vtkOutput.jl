@@ -11,11 +11,11 @@
 
 function write(chunk, ::CPU)
     c = chunk
-    t = round(c.time[1].t, sigdigits=4)
+    t = round(c.time[1].t, sigdigits = 4)
     println("Writing time ", c.time[1].t, " as ", t)
 
     if !(haskey(reg, "paraview"))
-        cells = [MeshCell(VTKCellTypes.VTK_VERTEX, (i, )) for i = 1:c.N]
+        cells = [MeshCell(VTKCellTypes.VTK_VERTEX, (i,)) for i = 1:c.N]
         pvd = paraview_collection("particleTimeSeries")
         reg["paraview"] = Dict("cells" => cells, "pvd" => pvd)
     end
@@ -87,7 +87,10 @@ function write_paraview_collection()
             return nothing
         end
     end
-    println("No paraview collection written since no paraview instance found"
-            *" in the registry")
+    println(
+        "No paraview collection written since no paraview instance found"
+        *
+        " in the registry"
+    )
     return nothing
 end

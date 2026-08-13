@@ -45,7 +45,8 @@ function determine!(requiredEulerianRanks, chunkBoundingBox, mesh, control)
         union!(
             requiredEulerianRanks,
             li[minP[1]:maxP[1], minP[2]:maxP[2], minP[3]:maxP[3]]
-            .- 1  # Rank indexing is zero-based
+            .-
+            1  # Rank indexing is zero-based
         )
     end
 end
@@ -63,8 +64,8 @@ function serve_eulerian(inquiringEulerianRanks, eulerian, comm, control)
             @debugCommPrintln("Send Eulerian to $inqHost")
             for (k, f) in enumerate(cf)
                 sreqs[n += 1] = MPI.Isend(
-                    getfield(own, f), comm.communicator, dest=inqHost,
-                    tag=10+k
+                    getfield(own, f), comm.communicator, dest = inqHost,
+                    tag = 10+k
                 )
             end
         end
@@ -88,8 +89,8 @@ function receive_sources(inquiringEulerianRanks, comm, eulerian)
         @debugCommPrintln("Receive sources from $inqRank")
         for (k, f) in enumerate(sf)
             sourceRreqs[n += 1] = MPI.Irecv!(
-                sourceBuffers[i][k], comm.communicator; source=inqRank,
-                tag=20+k
+                sourceBuffers[i][k], comm.communicator; source = inqRank,
+                tag = 20+k
             )
         end
     end
@@ -114,12 +115,12 @@ end
 # Answer one pending Eulerian request, if any: receive the empty inquiry
 # (tag 2), acknowledge it (tag 3) and record the inquiring rank
 function probe_eulerian_inquiry!(sreqs, inqRanks, comm, control, probeFlag)
-    comm_Iprobe(comm.communicator, probeFlag; tag=2)
+    comm_Iprobe(comm.communicator, probeFlag; tag = 2)
     if probeFlag[] != 0
         probeFlag[] = 0
         bufRef = Ref(41)
         _, status = MPI.Recv!(
-            MPI.Buffer(bufRef), comm.communicator, MPI.Status; tag=2
+            MPI.Buffer(bufRef), comm.communicator, MPI.Status; tag = 2
         )
         sreq = MPI.Isend(
             MPI.Buffer_send(42), status.source, 3, comm.communicator
@@ -157,9 +158,13 @@ function init_async_evolve!(eulerian, control, comm::Comm{Slave}, executor)
             comm_test(breq, barrierFlag)
         end
 
-        for req in sreqs comm_wait(req) end
+        for req in sreqs
+            comm_wait(req)
+        end
         eulerianSreqs = serve_eulerian(inqRanks, eulerian, comm, control)
-        for req in eulerianSreqs comm_wait(req) end
+        for req in eulerianSreqs
+            comm_wait(req)
+        end
 
         notify(control.events.U_copied)
         wait(control.events.Eulerian_computed)
@@ -243,9 +248,9 @@ function init_async_evolve!(
             # Setup receives for the requested carrier fields
             lock(control.locks.eulerianComms[iRank₁])
             for (k, f) in enumerate(cf)
-                rreqs[(i - 1)*nCf + k] = MPI.Irecv!(
+                rreqs[(i - 1) * nCf + k] = MPI.Irecv!(
                     getfield(eulerian[iRank₁], f), comm.communicator,
-                    source=iRank₀, tag=10+k
+                    source = iRank₀, tag = 10+k
                 )
             end
         end
@@ -269,11 +274,13 @@ function init_async_evolve!(
         # task-private buffers) to zero
         reset_sources!(state, executor)
 
-        for req in eulerianSreqs comm_wait(req) end
+        for req in eulerianSreqs
+            comm_wait(req)
+        end
 
         for (i, _, iRank₁) in zipIter
             for k in 1:nCf
-                comm_wait(rreqs[(i - 1)*nCf + k])
+                comm_wait(rreqs[(i - 1) * nCf + k])
             end
             unlock(control.locks.eulerianComms[iRank₁])
         end
@@ -350,16 +357,16 @@ function init_async_evolve!(
                     getfield(eulerian[iRank₁], f),
                     getfield(state.compute[iRank₁], f)
                 )
-                sourceSreqs[(i - 1)*nSf + k] = MPI.Isend(
+                sourceSreqs[(i - 1) * nSf + k] = MPI.Isend(
                     getfield(eulerian[iRank₁], f), comm.communicator,
-                    dest=iRank₀, tag=20+k
+                    dest = iRank₀, tag = 20+k
                 )
             end
         end
 
         for (i, _, iRank₁) in zipIter
             for k in 1:nSf
-                comm_wait(sourceSreqs[(i - 1)*nSf + k])
+                comm_wait(sourceSreqs[(i - 1) * nSf + k])
             end
             unlock(control.locks.eulerianComms[iRank₁])
         end

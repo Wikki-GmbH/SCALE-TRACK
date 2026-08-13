@@ -99,7 +99,7 @@ end
 # The global index of the particle handled by the calling thread
 @inline function particle_index(executor::GPU)
     return (block_index(executor) - 1LBL) * block_dim(executor) +
-        thread_index(executor)
+           thread_index(executor)
 end
 
 # Kernel: compute the bounding box of a chunk from the current positions
@@ -107,7 +107,7 @@ function compute_bounding_box(chunk, executor::GPU)
     @inbounds begin
         c = chunk
         i = particle_index(executor)
-        if(i <= c.N)
+        if (i <= c.N)
             pos = ScalarVec(c.X[i], c.Y[i], c.Z[i])
             update!(c.boundingBox, pos, executor)
         end
@@ -122,7 +122,7 @@ function evolve_on_device!(chunk, model, eulerian, mesh, executor)
         Δtd = chunk.time[1].Δt / nSteps  # Dispersed-phase time step
         nParcels = chunk.N
         i = particle_index(executor)
-        if(i <= nParcels)
+        if (i <= nParcels)
             evolve_particle!(
                 chunk, model, eulerian, i, Δtd, mesh, nSteps, executor
             )
@@ -166,14 +166,17 @@ function master_state(chunks, model, eulerian, mesh, comm, executor::GPU)
     compute = Vector{E}(undef, comm.size)
     devicePointers = device_vector_type(
         executor, device_eulerian_ptr_type(model, executor)
-    )(undef, comm.size)
+    )(
+        undef,
+        comm.size
+    )
     for i in eachindex(compute)
         # Initialize Eulerian fields
         compute[i] = E(eulerian[i].N)
         # Get the pointers on the device and store them in the pointer
         # container.
         scalar_set!(devicePointers, i, device_convert(compute[i], executor),
-                    executor)
+            executor)
     end
 
     # Compile kernels and prepare configuration
@@ -270,11 +273,14 @@ function sync_evolve!(chunk, model, eulerian, mesh, Δt, executor::GPU)
     # container changes: each initialization allocates a fresh one, and a
     # different model brings a different field set with it.
     if !haskey(reg, "syncDeviceEulerian") ||
-            get(reg, "syncDeviceEulerianSrc", nothing) !== eulerian
+       get(reg, "syncDeviceEulerianSrc", nothing) !== eulerian
         de = device_eulerian_type(model, executor)(eulerian.N)
         dePointer = device_vector_type(
             executor, device_eulerian_ptr_type(model, executor)
-        )(undef, 1)
+        )(
+            undef,
+            1
+        )
         scalar_set!(dePointer, 1, device_convert(de, executor), executor)
         reg["syncDeviceEulerian"] = de
         reg["syncDeviceEulerianPointer"] = dePointer

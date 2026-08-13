@@ -42,7 +42,13 @@ ending = [0.1, 0.1, 10.0]
 
 # Droplets released in the top 10% of the column with uniform diameter and
 # temperature
-function init_droplets!(chunk, mesh, executor, randSeed=19891, nChunksGlobal=1)
+function init_droplets!(
+    chunk,
+    mesh,
+    executor,
+    randSeed = 19891,
+    nChunksGlobal = 1
+)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 
@@ -53,7 +59,7 @@ function init_droplets!(chunk, mesh, executor, randSeed=19891, nChunksGlobal=1)
     rand!(rng, c.Z)
     fill!(c.X, 0.5SCL*mesh.L.x + mesh.origin.x)
     fill!(c.Y, 0.5SCL*mesh.L.y + mesh.origin.y)
-    @. c.Z = 0.1SCL*c.Z*mesh.L.z + mesh.origin.z+ 0.9SCL*mesh.L.z
+    @. c.Z = 0.1SCL*c.Z*mesh.L.z + mesh.origin.z + 0.9SCL*mesh.L.z
     fill!(c.d, 500e-6SCL)
     fill!(c.props.T, 296.15SCL)
     fill!(c.U, 0.0)

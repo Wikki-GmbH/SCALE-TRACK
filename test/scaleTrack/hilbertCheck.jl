@@ -46,7 +46,7 @@ failures = String[]
 
 report(ok, what) =
     (println("  ", rpad(what, 52), ok ? "PASS" : "FAIL");
-     ok || push!(failures, what))
+        ok || push!(failures, what))
 
 println("="^78)
 println("Hilbert curve")

@@ -43,7 +43,7 @@ end
 
 Slave() = Slave(Vector{label}())
 
-struct Comm{T<:CommMember}
+struct Comm{T <: CommMember}
     member::T
     communicator::MPI.Comm
     isMaster::Bool
@@ -106,7 +106,11 @@ function initComm(executor)
 
     # Assign devices to ranks uniformly
     hostRanks =
-        range(0, step=hostStride, length=min(nRanksPerNode, nDevicesPerNode))
+        range(
+            0,
+            step = hostStride,
+            length = min(nRanksPerNode, nDevicesPerNode)
+        )
     isHost = shmRank in hostRanks
 
     # Collective over all of COMM_WORLD; the ranks that are not tracking

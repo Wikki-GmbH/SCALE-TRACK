@@ -20,7 +20,7 @@ include(joinpath(@__DIR__, "../../../test/caseCompare.jl"))
 
 banner("freeFall")
 require("momentumZ_OF.csv", "momentumZ_ST.csv",
-        "H2OPMass_OF.csv", "H2OPMass_ST.csv")
+    "H2OPMass_OF.csv", "H2OPMass_ST.csv")
 
 # The reference reports the momentum as a vector, of which the third
 # component is the falling direction; the tracking reports that component
@@ -61,7 +61,10 @@ verdict!("bounce row beyond the offset", abs(bST - shift - bOF), 4)
 # whole statement
 mOF = read_series("H2OPMass_OF.csv")
 mST = read_series("H2OPMass_ST.csv")
-drift(s) = let v = [r[1] for r in s]; (maximum(v) - minimum(v))/maximum(v) end
+drift(s) =
+    let v = [r[1] for r in s]
+        (maximum(v) - minimum(v))/maximum(v)
+    end
 
 println()
 println("  mass in the system, ", first(mOF)[1], " kg")

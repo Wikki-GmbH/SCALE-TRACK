@@ -50,7 +50,7 @@ function construct_mesh(N, origin, ending, decomposition)
 end
 
 function Mesh(
-    NInt::Integer, originR::Real, endingR::Real, decomposition=(1,1,1)
+    NInt::Integer, originR::Real, endingR::Real, decomposition = (1, 1, 1)
 )
     N = [NInt, NInt, NInt]
     origin = [originR, originR, originR]
@@ -85,7 +85,7 @@ end
 # linear partition index.  Linear indices start at 1 and direction indices at 0.
 @inline function locate(x, y, z, mesh)
     iGlobal, jGlobal, kGlobal, iLocal, jLocal, kLocal, iPartition, jPartition,
-        kPartition = locate_ijk(x, y, z, mesh)
+    kPartition = locate_ijk(x, y, z, mesh)
     partitionI = (
         abs(kPartition)*mesh.decompositionXTimesY
         + abs(jPartition)*mesh.decomposition.x + abs(iPartition) + 1LBL

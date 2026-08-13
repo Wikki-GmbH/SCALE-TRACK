@@ -33,7 +33,7 @@ init_props!(chunk, model) = foreach(a -> fill!(a, 0.0), values(chunk.props))
 # initializer give each chunk its own region.
 # Here the index only seeds the random number generator, so that two chunks
 # do not receive the same particles.
-function init!(chunk, mesh, executor, iChunk=19891, nChunksGlobal=1)
+function init!(chunk, mesh, executor, iChunk = 19891, nChunksGlobal = 1)
     c = chunk
     set_time!(c, 0.0, 0.0, executor)
 
@@ -120,7 +120,7 @@ end
 # Place a chunk's particles on its stretch of the curve.  Positions only: the
 # caller sets whatever else its model needs.
 function init_hilbert_positions!(
-    chunk, mesh, executor, iChunk, nChunksGlobal; nBits=10, randSeed=iChunk
+    chunk, mesh, executor, iChunk, nChunksGlobal; nBits = 10, randSeed = iChunk
 )
     c = chunk
     hStart, hEnd = chunk_curve_range(iChunk, nChunksGlobal, nBits)
@@ -286,11 +286,11 @@ function chunk_summary(chunk, model)
     c = chunk
     dMin, dMax = extrema(c.d)
     w = parcel_weight(model)*parcel_density(model)*π/6
-    mass = w*sum(c.d.^3)
-    momentum = w*sum(c.d.^3 .* c.W)
+    mass = w*sum(c.d .^ 3)
+    momentum = w*sum(c.d .^ 3 .* c.W)
     props = map(a -> extrema(a), values(c.props))
     return (N = Int(c.N), dMin = dMin, dMax = dMax, mass = mass,
-            momentum = momentum, props = props)
+        momentum = momentum, props = props)
 end
 
 # Combine the per-chunk summaries of this rank
@@ -303,10 +303,10 @@ function combine_summaries(summaries)
     momentum = sum(s -> s.momentum, summaries)
     props = ntuple(length(first.props)) do i
         (minimum(s -> s.props[i][1], summaries),
-         maximum(s -> s.props[i][2], summaries))
+            maximum(s -> s.props[i][2], summaries))
     end
     return (N = N, dMin = dMin, dMax = dMax, mass = mass,
-            momentum = momentum, props = props)
+        momentum = momentum, props = props)
 end
 
 # Print in the layout of an OpenFOAM cloud info() block
@@ -317,7 +317,7 @@ function print_cloud_summary(s, propNames)
     println("    Diameter min/max            = ", s.dMin, ", ", s.dMax)
     for (name, ex) in zip(propNames, s.props)
         println("    ", rpad(string(name), 8), " min/max            = ",
-                ex[1], ", ", ex[2])
+            ex[1], ", ", ex[2])
     end
     println("    Linear momentum z           = ", s.momentum)
     flush(stdout)

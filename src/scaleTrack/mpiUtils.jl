@@ -11,8 +11,9 @@
 # sporadically during a run, so use these wrappers in communication loops.
 
 # Wrapper for MPI non-blocking synchronous send unavailable in MPI.jl
-function comm_Issend(buf::MPI.Buffer, dest::Integer, tag::Integer, comm::MPI.Comm,
-        req::MPI.AbstractRequest=MPI.Request()
+function comm_Issend(buf::MPI.Buffer, dest::Integer, tag::Integer,
+    comm::MPI.Comm,
+    req::MPI.AbstractRequest = MPI.Request()
 )
     @assert MPI.isnull(req)
     # int MPI_Issend(const void* buf, int count, MPI_Datatype datatype, int
@@ -24,8 +25,9 @@ end
 
 # Wrapper for MPI Iprobe that does not allocate flag
 function comm_Iprobe(
-    comm::MPI.Comm, flag, status=nothing;
-    source::Integer=MPI.API.MPI_ANY_SOURCE[], tag::Integer=MPI.API.MPI_ANY_TAG[]
+    comm::MPI.Comm, flag, status = nothing;
+    source::Integer = MPI.API.MPI_ANY_SOURCE[],
+    tag::Integer = MPI.API.MPI_ANY_TAG[]
 )
     MPI.API.MPI_Iprobe(
         source, tag, comm, flag, something(status, MPI.API.MPI_STATUS_IGNORE[])
@@ -36,7 +38,7 @@ end
 # Wrapper for MPI Test that does not allocate flag
 function comm_test(
     req::MPI.AbstractRequest, flag,
-    status::Union{Ref{MPI.Status}, Nothing}=nothing
+    status::Union{Ref{MPI.Status}, Nothing} = nothing
 )
     # int MPI_Test(MPI_Request *request, int *flag, MPI_Status *status)
     MPI.API.MPI_Test(req, flag, something(status, MPI.API.MPI_STATUS_IGNORE[]))

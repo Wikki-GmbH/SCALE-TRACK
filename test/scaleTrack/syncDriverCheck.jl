@@ -40,21 +40,21 @@ const label = Int32
 include(joinpath(@__DIR__, "../../src/scaleTrack/scaleTrack.jl"))
 
 # ---------------------------------------------------------------- parameters
-const TC    = 293.15        # carrier temperature [K]        (frozen)
-const RHOV  = 0.00865       # carrier vapour density [kg/m^3](frozen)
-const TD0   = 296.15        # initial droplet temperature [K]
-const D0    = 500e-6        # initial droplet diameter [m]
-const RHOD  = 1000.0
-const CPD   = 4200.0
-const Z0    = 9.5           # mid of the top cell of the 1x1x10 mesh
+const TC   = 293.15        # carrier temperature [K]        (frozen)
+const RHOV = 0.00865       # carrier vapour density [kg/m^3](frozen)
+const TD0  = 296.15        # initial droplet temperature [K]
+const D0   = 500e-6        # initial droplet diameter [m]
+const RHOD = 1000.0
+const CPD  = 4200.0
+const Z0   = 9.5           # mid of the top cell of the 1x1x10 mesh
 
-const NPARCELS    = 10_000     # as in the coupled free-fall case
-const NSUB     = 100        # as in the coupled free-fall case
-const NCELLS   = [1, 1, 10]
-const ORIGIN   = [0.0, 0.0, 0.0]
-const ENDING   = [0.1, 0.1, 10.0]
-const DT       = 0.01       # coupling time step
-const NSTEPS   = 200        # two seconds of physical time
+const NPARCELS = 10_000     # as in the coupled free-fall case
+const NSUB = 100        # as in the coupled free-fall case
+const NCELLS = [1, 1, 10]
+const ORIGIN = [0.0, 0.0, 0.0]
+const ENDING = [0.1, 0.1, 10.0]
+const DT = 0.01       # coupling time step
+const NSTEPS = 200        # two seconds of physical time
 
 make_model(evap) = HumidAirDroplet(
     evap;
@@ -91,8 +91,11 @@ function kernel_reference(model)
     )
     carrier = (U = ScalarVec(0, 0, 0), T = scalar(TC), rhoV = scalar(RHOV))
     Δt = scalar(DT/NSUB)
-    Td = Float64[]; src = Float64[]; zs = Float64[]
-    msrc = Float64[]; ds = Float64[]
+    Td = Float64[]
+    src = Float64[]
+    zs = Float64[]
+    msrc = Float64[]
+    ds = Float64[]
     for n in 1:NSTEPS
         acc = (dUTrans = ScalarVec(0, 0, 0), dhTrans = 0SCL, drhoVTrans = 0SCL)
         for s in 1:NSUB
@@ -127,8 +130,11 @@ function driver_run(model)
     fill!(e.hTrans, 0SCL)
     fill!(e.rhoVTrans, 0SCL)
 
-    Td = Float64[]; src = Float64[]; zs = Float64[]
-    msrc = Float64[]; ds = Float64[]
+    Td = Float64[]
+    src = Float64[]
+    zs = Float64[]
+    msrc = Float64[]
+    ds = Float64[]
     for n in 1:NSTEPS
         evolve_cloud(scalar(DT))
         push!(Td, Float64(chunk.props.T[1]))
@@ -142,35 +148,49 @@ end
 
 # ===================================================================== main
 function compare(evap, title)
-    println(); println("="^78); println(title); println("="^78)
+    println()
+    println("="^78)
+    println(title)
+    println("="^78)
 
     kTd, kSrc, kZ, kM, kD = kernel_reference(make_model(evap))
     dTd, dSrc, dZ, dM, dD = driver_run(make_model(evap))
 
     println()
     println("  step   t[s]   Td kernel     Td driver      dTd [K]    ",
-            "src kernel   src driver     ratio")
+        "src kernel   src driver     ratio")
     for n in (1, 20, 50, 100, 180, 200)
         n > NSTEPS && continue
-        println("  ", lpad(n, 4), "  ", lpad(round(n*DT, digits=2), 5), "  ",
-                lpad(round(kTd[n], digits=6), 11), "  ",
-                lpad(round(dTd[n], digits=6), 11), "  ",
-                lpad(round(dTd[n]-kTd[n], sigdigits=3), 11), "  ",
-                lpad(round(kSrc[n], sigdigits=5), 11), "  ",
-                lpad(round(dSrc[n], sigdigits=5), 11), "  ",
-                lpad(round(dSrc[n]/kSrc[n], digits=5), 9))
+        println("  ", lpad(n, 4), "  ", lpad(round(n*DT, digits = 2), 5), "  ",
+            lpad(round(kTd[n], digits = 6), 11), "  ",
+            lpad(round(dTd[n], digits = 6), 11), "  ",
+            lpad(round(dTd[n]-kTd[n], sigdigits = 3), 11), "  ",
+            lpad(round(kSrc[n], sigdigits = 5), 11), "  ",
+            lpad(round(dSrc[n], sigdigits = 5), 11), "  ",
+            lpad(round(dSrc[n]/kSrc[n], digits = 5), 9))
     end
 
-    maxdT   = maximum(abs.(dTd .- kTd))
-    maxrel  = maximum(abs.(dSrc .- kSrc) ./ abs.(kSrc))
-    maxdZ   = maximum(abs.(dZ .- kZ))
+    maxdT  = maximum(abs.(dTd .- kTd))
+    maxrel = maximum(abs.(dSrc .- kSrc) ./ abs.(kSrc))
+    maxdZ  = maximum(abs.(dZ .- kZ))
     println()
-    println("  max |Td_driver - Td_kernel|     = ", round(maxdT, sigdigits=4), " K")
-    println("  max |z_driver  - z_kernel|      = ", round(maxdZ, sigdigits=4), " m")
-    println("  max relative source difference  = ", round(maxrel, sigdigits=4))
+    println(
+        "  max |Td_driver - Td_kernel|     = ",
+        round(maxdT, sigdigits = 4),
+        " K"
+    )
+    println(
+        "  max |z_driver  - z_kernel|      = ",
+        round(maxdZ, sigdigits = 4),
+        " m"
+    )
+    println(
+        "  max relative source difference  = ",
+        round(maxrel, sigdigits = 4)
+    )
     println("  decay of (Td - Tc) over the run : kernel ",
-            round((TD0-TC)/(kTd[end]-TC), digits=3), "x   driver ",
-            round((TD0-TC)/(dTd[end]-TC), digits=3), "x")
+        round((TD0-TC)/(kTd[end]-TC), digits = 3), "x   driver ",
+        round((TD0-TC)/(dTd[end]-TC), digits = 3), "x")
 
     # The quantities the coupled solver logs, for direct comparison with a
     # coupled run
@@ -179,10 +199,10 @@ function compare(evap, title)
     println("   t[s]   integral hTrans [J]   integral rhoVTrans [kg]   d [m]")
     for n in (20, 100, 180, 200)
         n > NSTEPS && continue
-        println("  ", lpad(round(n*DT, digits=2), 5), "  ",
-                lpad(round(dSrc[n], sigdigits=5), 18), "  ",
-                lpad(round(dM[n], sigdigits=5), 22), "  ",
-                lpad(round(dD[n], sigdigits=6), 12))
+        println("  ", lpad(round(n*DT, digits = 2), 5), "  ",
+            lpad(round(dSrc[n], sigdigits = 5), 18), "  ",
+            lpad(round(dM[n], sigdigits = 5), 22), "  ",
+            lpad(round(dD[n], sigdigits = 6), 12))
     end
     return maxdT, maxrel
 end
@@ -193,22 +213,32 @@ println(NPARCELS, " identical droplets, frozen uniform carrier at ", TC, " K")
 
 # Both models in one process by default: that re-initializes the driver and so
 # also exercises the invalidation of its cached Eulerian copy
-models = EVAPARG == "noevap" ? [("noevap", NoEvaporation())] :
-         EVAPARG == "evap"   ? [("evap",   Evaporation())]   :
-         [("noevap", NoEvaporation()), ("evap", Evaporation())]
+models =
+    EVAPARG == "noevap" ? [("noevap", NoEvaporation())] :
+    EVAPARG == "evap"   ? [("evap", Evaporation())]     :
+    [("noevap", NoEvaporation()), ("evap", Evaporation())]
 
 results = [
-    (name, compare(m, name == "noevap" ? "NoEvaporation" :
-                      "Evaporation  (the setting of the coupled case)"))
+    (
+        name,
+        compare(
+            m,
+            name == "noevap" ? "NoEvaporation" :
+            "Evaporation  (the setting of the coupled case)"
+        )
+    )
     for (name, m) in models
 ]
 
-println(); println("="^78); println("VERDICT"); println("="^78)
+println();
+println("="^78);
+println("VERDICT");
+println("="^78)
 tol = PRECISION == "SP" ? 1e-3 : 1e-9
 println("  tolerance on the relative source difference: ", tol)
 for (name, r) in results
     println("  ", rpad(name, 16), "max rel src diff = ",
-            rpad(round(r[2], sigdigits=4), 12), r[2] < tol ? "PASS" : "FAIL")
+        rpad(round(r[2], sigdigits = 4), 12), r[2] < tol ? "PASS" : "FAIL")
 end
 println()
 println("  PASS here means the driver faithfully reproduces the kernel, so a")

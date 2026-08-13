@@ -87,7 +87,7 @@ make_model(::Val{:humid}) = HumidAirDroplet(
 # The host chunk both executors start from, built once per model
 hostRef = nothing
 
-function init_from_host!(chunk, mesh, executor, randSeed=19891)
+function init_from_host!(chunk, mesh, executor, randSeed = 19891)
     global hostRef, physics
     if isnothing(hostRef)
         h = allocate_chunk(CPU(), physics, chunk.N, chunk.nSubSteps)
@@ -135,7 +135,8 @@ function run_case(executorArg)
     sources = Dict{String, Vector{Float64}}()
     for f in source_fields(typeof(e))
         arr = getfield(e, f)
-        sources[string(f)] = eltype(arr) <: ScalarVec ?
+        sources[string(f)] =
+            eltype(arr) <: ScalarVec ?
             reduce(vcat, [[v.x, v.y, v.z] for v in arr]) : Vector{Float64}(arr)
     end
     return state, sources
@@ -170,33 +171,37 @@ function check_model(modelName)
 
     # Collected before reducing, so every field is reported even once one
     # of them has failed
-    stateOk = map(sort(collect(keys(cpuState)))) do name
-        d = max_rel_diff(cpuState[name], gpuState[name])
-        ok = d <= TOL_STATE
-        println("  parcel ", rpad(name, 14), "max rel diff = ",
-                rpad(round(d; sigdigits=4), 12), ok ? "PASS" : "FAIL")
-        return ok
-    end |> all
+    stateOk =
+        map(sort(collect(keys(cpuState)))) do name
+            d = max_rel_diff(cpuState[name], gpuState[name])
+            ok = d <= TOL_STATE
+            println("  parcel ", rpad(name, 14), "max rel diff = ",
+                rpad(round(d; sigdigits = 4), 12), ok ? "PASS" : "FAIL")
+            return ok
+        end |> all
 
-    sourceOk = map(sort(collect(keys(cpuSources)))) do name
-        a, b = cpuSources[name], gpuSources[name]
-        d = max_rel_diff(a, b)
-        sa, sb = sum(a), sum(b)
-        ds = abs(sa - sb) / max(abs(sa), eps())
-        ok = d <= TOL_SOURCE && ds <= TOL_SOURCE_SUM
-        println("  source ", rpad(name, 14),
-                "per cell = ", rpad(round(d; sigdigits=4), 12),
-                "sum = ", rpad(round(ds; sigdigits=4), 12),
+    sourceOk =
+        map(sort(collect(keys(cpuSources)))) do name
+            a, b = cpuSources[name], gpuSources[name]
+            d = max_rel_diff(a, b)
+            sa, sb = sum(a), sum(b)
+            ds = abs(sa - sb) / max(abs(sa), eps())
+            ok = d <= TOL_SOURCE && ds <= TOL_SOURCE_SUM
+            println("  source ", rpad(name, 14),
+                "per cell = ", rpad(round(d; sigdigits = 4), 12),
+                "sum = ", rpad(round(ds; sigdigits = 4), 12),
                 ok ? "PASS" : "FAIL")
-        return ok
-    end |> all
+            return ok
+        end |> all
 
     println("\n  tolerances: state ", TOL_STATE, ", source per cell ",
-            TOL_SOURCE, ", source sum ", TOL_SOURCE_SUM)
+        TOL_SOURCE, ", source sum ", TOL_SOURCE_SUM)
     ok = stateOk && sourceOk
-    println(ok ?
+    println(
+        ok ?
         "  PASS -- the GPU executor reproduces the CPU executor." :
-        "  FAIL -- the executors disagree beyond roundoff.")
+        "  FAIL -- the executors disagree beyond roundoff."
+    )
     return ok
 end
 

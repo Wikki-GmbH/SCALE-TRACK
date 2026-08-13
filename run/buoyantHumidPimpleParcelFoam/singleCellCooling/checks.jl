@@ -20,7 +20,7 @@ include(joinpath(@__DIR__, "../../../test/caseCompare.jl"))
 
 quantities = [
     Quantity("carrier temperature",
-             "Tcont_OF.csv", "Tcont_ST.csv", :abs, 0.01, "K"),
+        "Tcont_OF.csv", "Tcont_ST.csv", :abs, 0.01, "K"),
     Quantity("parcel temperature", "Tp_OF.csv", "Tp_ST.csv", :abs, 0.05, "K"),
 ]
 

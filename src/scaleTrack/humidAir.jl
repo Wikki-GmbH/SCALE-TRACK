@@ -87,7 +87,8 @@ device_eulerian_type(::HumidAirDroplet, ex::GPU) = HumidEulerian{
     device_vector_type(ex, ScalarVec), device_vector_type(ex, scalar)
 }
 device_eulerian_ptr_type(::HumidAirDroplet, ex::GPU) = HumidEulerian{
-    device_ptr_vector_type(ex, ScalarVec), device_ptr_vector_type(ex, scalar)
+    device_ptr_vector_type(ex, ScalarVec),
+    device_ptr_vector_type(ex, scalar)
 }
 
 # Per-particle droplet temperature
@@ -168,9 +169,11 @@ end
 # temperature in K
 @inline function saturation_pressure(T)
     TinC = scalar(T - 273.15SCL)
-    return scalar(611.21SCL*exp(
-        (18.678SCL - TinC/234.5SCL)*(TinC/(257.14SCL + TinC))
-    ))
+    return scalar(
+        611.21SCL*exp(
+            (18.678SCL - TinC/234.5SCL)*(TinC/(257.14SCL + TinC))
+        )
+    )
 end
 
 # Droplet mass change by evaporation/condensation over one sub-step: returns
@@ -252,8 +255,8 @@ end
     htc = Nu*κˢ/⌀
 
     # integration coefficients
-    bcp  = scalar(htc*Asᵈ/(mᵈ*Cₚᵈ))
-    acp  = scalar(bcp*Tᶜ)
+    bcp = scalar(htc*Asᵈ/(mᵈ*Cₚᵈ))
+    acp = scalar(bcp*Tᶜ)
 
     # effective time step
     ΔtEff = Δt/(1SCL + bcp*Δt)
@@ -311,7 +314,7 @@ end
     urel = uᶜ .- uᵈ
 
     # Particle Reynolds number
-    Re = scalar(sqrt(sum(urel.^2))*⌀*ρˢ/μˢ)
+    Re = scalar(sqrt(sum(urel .^ 2))*⌀*ρˢ/μˢ)
 
     ### temperature ###
     TᵈNew, dhTrans =
@@ -324,30 +327,30 @@ end
     Fd = scalar(mᵈ*0.75SCL*μᶜ*CdRe/(ρᵈ*⌀^2SCL))
 
     # gravity force
-    Fg = ScalarVec(mᵈ.*g.*(1SCL-ρᶜ/ρᵈ))
+    Fg = ScalarVec(mᵈ .* g .* (1SCL-ρᶜ/ρᵈ))
 
     # integration coefficients
-    acpU  = ScalarVec(Fd.*uᶜ./mᵈ)
-    ancp = ScalarVec(Fg./mᵈ)
-    bcpU  = scalar(Fd./mᵈ)
+    acpU = ScalarVec(Fd .* uᶜ ./ mᵈ)
+    ancp = ScalarVec(Fg ./ mᵈ)
+    bcpU = scalar(Fd ./ mᵈ)
 
     # effective time step
     ΔtEffU = Δt/(1SCL + bcpU*Δt)
 
     # Implicit Euler time integration of particle velocity
-    Δuᵈ = ScalarVec((acpU .+ ancp .- bcpU.*uᵈ).*ΔtEffU)
-    ΔuᵈNcp = ancp*Δt
-    ΔuᵈCp  = Δuᵈ - ΔuᵈNcp
+    Δuᵈ     = ScalarVec((acpU .+ ancp .- bcpU .* uᵈ) .* ΔtEffU)
+    ΔuᵈNcp  = ancp*Δt
+    ΔuᵈCp   = Δuᵈ - ΔuᵈNcp
     uᵈNew   = uᵈ .+ Δuᵈ
     uᵈNewCp = uᵈ .+ ΔuᵈCp
     dUTrans = ScalarVec(
-        acc.dUTrans.x - (mᵈNew*uᵈNewCp.x - mᵈ*uᵈ.x),
-        acc.dUTrans.y - (mᵈNew*uᵈNewCp.y - mᵈ*uᵈ.y),
-        acc.dUTrans.z - (mᵈNew*uᵈNewCp.z - mᵈ*uᵈ.z)
-    )
+    acc.dUTrans.x - (mᵈNew*uᵈNewCp.x - mᵈ*uᵈ.x),
+    acc.dUTrans.y - (mᵈNew*uᵈNewCp.y - mᵈ*uᵈ.y),
+    acc.dUTrans.z - (mᵈNew*uᵈNewCp.z - mᵈ*uᵈ.z)
+)
 
     # update the position
-    posNew = parcel.pos .+ uᵈNew.*Δt
+    posNew = parcel.pos .+ uᵈNew .* Δt
 
     return (
         ParcelState(posNew, uᵈNew, (T = TᵈNew, ⌀ = ⌀New, m = mᵈNew)),

@@ -78,7 +78,7 @@ function estimate_source!(eulerian, extrapolator::ConstExtrapolator)
     for f in keys(extrapolator.prev)
         curr = getfield(eulerian, f)
         prev = getfield(extrapolator.prev, f)
-        curr .= 2.0.*curr .- prev
+        curr .= 2.0 .* curr .- prev
         for i in eachindex(prev)
             @inbounds prev[i] = curr[i]
         end

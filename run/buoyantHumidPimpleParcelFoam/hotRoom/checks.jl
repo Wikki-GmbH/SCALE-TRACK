@@ -34,7 +34,7 @@ include(joinpath(@__DIR__, "../../../test/caseCompare.jl"))
 
 quantities = [
     Quantity("vapour mass, relative",
-             "integralrhoV_OF.csv", "integralrhoV_ST.csv", :rel, 5e-5),
+        "integralrhoV_OF.csv", "integralrhoV_ST.csv", :rel, 5e-5),
 ]
 
 # Judge the last sample of a pair, where the room has settled
@@ -59,7 +59,7 @@ function report_transient(label, ofFile, stFile, unit = "")
     println()
     println("  ", label, "  (transient, reported only)")
     println("    max |difference| over ", length(a), " samples = ",
-            round(d, sigdigits = 6), " ", unit)
+        round(d, sigdigits = 6), " ", unit)
     return d
 end
 
@@ -75,13 +75,13 @@ for q in quantities
 end
 
 check_settled!("carrier temperature",
-               "minmaxT_OF.csv", "minmaxT_ST.csv", 0.05, "K")
+    "minmaxT_OF.csv", "minmaxT_ST.csv", 0.05, "K")
 report_transient("carrier temperature",
-                 "minmaxT_OF.csv", "minmaxT_ST.csv", "K")
+    "minmaxT_OF.csv", "minmaxT_ST.csv", "K")
 
 check_settled!("carrier vapour density",
-               "minmaxrhoV_OF.csv", "minmaxrhoV_ST.csv", 3e-4, "kg/m^3")
+    "minmaxrhoV_OF.csv", "minmaxrhoV_ST.csv", 3e-4, "kg/m^3")
 report_transient("carrier vapour density",
-                 "minmaxrhoV_OF.csv", "minmaxrhoV_ST.csv", "kg/m^3")
+    "minmaxrhoV_OF.csv", "minmaxrhoV_ST.csv", "kg/m^3")
 
 finish()

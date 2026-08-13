@@ -110,18 +110,22 @@ end
 function reference(gz, tEnd, dt)
     y = (TD0, 0.0)
     t = 0.0
-    ts = [0.0]; Ts = [TD0]; ws = [0.0]
+    ts = [0.0]
+    Ts = [TD0]
+    ws = [0.0]
     nOut = max(1, round(Int, tEnd/dt/2000))
-    for n in 1:round(Int, tEnd/dt)
+    for n in 1:round(Int, tEnd / dt)
         k1 = rhs(y, gz, D0)
         k2 = rhs((y[1] + dt/2*k1[1], y[2] + dt/2*k1[2]), gz, D0)
         k3 = rhs((y[1] + dt/2*k2[1], y[2] + dt/2*k2[2]), gz, D0)
-        k4 = rhs((y[1] + dt*k3[1],   y[2] + dt*k3[2]),   gz, D0)
+        k4 = rhs((y[1] + dt*k3[1], y[2] + dt*k3[2]), gz, D0)
         y = (y[1] + dt/6*(k1[1] + 2k2[1] + 2k3[1] + k4[1]),
-             y[2] + dt/6*(k1[2] + 2k2[2] + 2k3[2] + k4[2]))
+            y[2] + dt/6*(k1[2] + 2k2[2] + 2k3[2] + k4[2]))
         t += dt
         if n % nOut == 0
-            push!(ts, t); push!(Ts, y[1]); push!(ws, y[2])
+            push!(ts, t)
+            push!(Ts, y[1])
+            push!(ws, y[2])
         end
     end
     return ts, Ts, ws
@@ -134,7 +138,11 @@ function run_scaletrack(model, Δt, nSteps)
     )
     carrier = (U = ScalarVec(0, 0, 0), T = scalar(TC), rhoV = scalar(RHOV))
     acc = (dUTrans = ScalarVec(0, 0, 0), dhTrans = 0SCL, drhoVTrans = 0SCL)
-    ts = [0.0]; Ts = [TD0]; ws = [0.0]; ds = [D0]; hs = [0.0]
+    ts = [0.0]
+    Ts = [TD0]
+    ws = [0.0]
+    ds = [D0]
+    hs = [0.0]
     nOut = max(1, nSteps ÷ 2000)
     for n in 1:nSteps
         parcel, acc = substep(model, parcel, carrier, acc, scalar(Δt))
@@ -154,8 +162,8 @@ interp(ts, ys, t) = begin
     i = searchsortedfirst(ts, t)
     i <= 1 && return ys[1]
     i > length(ts) && return ys[end]
-    f = (t - ts[i-1])/(ts[i] - ts[i-1])
-    ys[i-1] + f*(ys[i] - ys[i-1])
+    f = (t - ts[i - 1])/(ts[i] - ts[i - 1])
+    ys[i - 1] + f*(ys[i] - ys[i - 1])
 end
 
 # tau from an exponential fit through the endpoint: T(t) = Tc + dT0*exp(-t/tau)
@@ -178,29 +186,45 @@ function caseA(Δt, tEnd)
     τ0 = 1/c0.bT
     expT(t) = TC + (TD0 - TC)*exp(-t/τ0)
 
-    println("  Nu (analytic, Re=0)      = ", round(c0.Nu, digits=6))
-    println("  htc                      = ", round(c0.htc, digits=4), " W/m^2/K")
-    println("  tau = m*Cpd/(htc*As)     = ", round(τ0, digits=5), " s")
+    println("  Nu (analytic, Re=0)      = ", round(c0.Nu, digits = 6))
+    println(
+        "  htc                      = ",
+        round(c0.htc, digits = 4),
+        " W/m^2/K"
+    )
+    println("  tau = m*Cpd/(htc*As)     = ", round(τ0, digits = 5), " s")
     println()
     println("     t [s]    SCALE-TRACK        REF(RK4)      EXP(closed)   ",
-            "ST-REF [K]   ST-EXP [K]")
+        "ST-REF [K]   ST-EXP [K]")
     for t in (0.5, 1.0, 2.0, 5.0, 10.0)
         t > tEnd && continue
-        st = interp(ts, Ts, t); rf = interp(rts, rTs, t); ex = expT(t)
+        st = interp(ts, Ts, t)
+        rf = interp(rts, rTs, t)
+        ex = expT(t)
         println("  ", lpad(t, 7), "   ",
-                lpad(round(st, digits=9), 14), "  ", lpad(round(rf, digits=9), 14),
-                "  ", lpad(round(ex, digits=9), 14),
-                "  ", lpad(round(st-rf, sigdigits=3), 11),
-                "  ", lpad(round(st-ex, sigdigits=3), 11))
+            lpad(round(st, digits = 9), 14), "  ",
+            lpad(round(rf, digits = 9), 14),
+            "  ", lpad(round(ex, digits = 9), 14),
+            "  ", lpad(round(st-rf, sigdigits = 3), 11),
+            "  ", lpad(round(st-ex, sigdigits = 3), 11))
     end
-    errREF = maximum(abs(interp(ts, Ts, t) - interp(rts, rTs, t))
-                     for t in range(0, tEnd, length=101))
-    errEXP = maximum(abs(interp(ts, Ts, t) - expT(t))
-                     for t in range(0, tEnd, length=101))
+    errREF = maximum(
+        abs(interp(ts, Ts, t) - interp(rts, rTs, t))
+        for t in range(0, tEnd, length = 101)
+    )
+    errEXP = maximum(
+        abs(interp(ts, Ts, t) - expT(t))
+        for t in range(0, tEnd, length = 101)
+    )
     println()
-    println("  max |ST - REF| over the run = ", round(errREF, sigdigits=4), " K")
-    println("  max |ST - EXP| over the run = ", round(errEXP, sigdigits=4), " K",
-            "   (nonlinearity of kappa(Td), not an error)")
+    println(
+        "  max |ST - REF| over the run = ",
+        round(errREF, sigdigits = 4),
+        " K"
+    )
+    println("  max |ST - EXP| over the run = ", round(errEXP, sigdigits = 4),
+        " K",
+        "   (nonlinearity of kappa(Td), not an error)")
 
     # energy bookkeeping: the accumulated source must telescope to the change
     # in the droplet's absolute enthalpy Cpd*m*T
@@ -209,8 +233,8 @@ function caseA(Δt, tEnd)
     println("  sum(dhTrans)                = ", Float64(acc.dhTrans))
     println("  -Cpd*(m*T_end - m*T_0)      = ", expectedH)
     println("  relative difference         = ",
-            round(abs(Float64(acc.dhTrans) - expectedH)/abs(expectedH),
-                  sigdigits=3))
+        round(abs(Float64(acc.dhTrans) - expectedH)/abs(expectedH),
+            sigdigits = 3))
     return errREF, τ0
 end
 
@@ -224,35 +248,43 @@ function caseBC(Δt, tEnd, evap, title)
 
     c0 = coeffs(TD0, 0.0, D0)
     println("     t [s]    SCALE-TRACK        REF(RK4)   ST-REF [K]     ",
-            "w [m/s]      Re       Nu     tau_eff [s]")
+        "w [m/s]      Re       Nu     tau_eff [s]")
     for t in (0.1, 0.25, 0.5, 1.0, 2.0)
         t > tEnd && continue
-        st = interp(ts, Ts, t); rf = interp(rts, rTs, t)
+        st = interp(ts, Ts, t)
+        rf = interp(rts, rTs, t)
         w  = interp(ts, ws, t)
         c  = coeffs(st, w, interp(ts, ds, t))
         println("  ", lpad(t, 7), "   ",
-                lpad(round(st, digits=8), 14), "  ", lpad(round(rf, digits=8), 14),
-                "  ", lpad(round(st-rf, sigdigits=3), 11),
-                "  ", lpad(round(w, digits=4), 10),
-                "  ", lpad(round(c.Re, digits=2), 7),
-                "  ", lpad(round(c.Nu, digits=3), 7),
-                "  ", lpad(round(1/c.bT, digits=4), 10))
+            lpad(round(st, digits = 8), 14), "  ",
+            lpad(round(rf, digits = 8), 14),
+            "  ", lpad(round(st-rf, sigdigits = 3), 11),
+            "  ", lpad(round(w, digits = 4), 10),
+            "  ", lpad(round(c.Re, digits = 2), 7),
+            "  ", lpad(round(c.Nu, digits = 3), 7),
+            "  ", lpad(round(1/c.bT, digits = 4), 10))
     end
-    errREF = maximum(abs(interp(ts, Ts, t) - interp(rts, rTs, t))
-                     for t in range(0, tEnd, length=101))
+    errREF = maximum(
+        abs(interp(ts, Ts, t) - interp(rts, rTs, t))
+        for t in range(0, tEnd, length = 101)
+    )
     println()
-    println("  max |ST - REF| over the run = ", round(errREF, sigdigits=4), " K")
+    println(
+        "  max |ST - REF| over the run = ",
+        round(errREF, sigdigits = 4),
+        " K"
+    )
 
     # How much has the droplet-to-gas temperature difference decayed?  This is
     # the quantity the coupled enthalpy source is proportional to.
     for t in (2.0,)
         t > tEnd && continue
         dT = interp(ts, Ts, t) - TC
-        println("  (Td - Tc) at t=", t, ": ", round(dT, digits=5), " K  of ",
-                TD0 - TC, " K  ->  decayed ",
-                round((TD0 - TC)/dT, digits=3), "x")
+        println("  (Td - Tc) at t=", t, ": ", round(dT, digits = 5), " K  of ",
+            TD0 - TC, " K  ->  decayed ",
+            round((TD0 - TC)/dT, digits = 3), "x")
         println("  implied tau                 = ",
-                round(tau_from(t, interp(ts, Ts, t)), digits=4), " s")
+            round(tau_from(t, interp(ts, Ts, t)), digits = 4), " s")
     end
     if evap isa Evaporation
         println("  diameter  ", D0, " -> ", Float64(parcel.props.⌀), " m")
@@ -270,9 +302,9 @@ println("droplet: d = ", D0, " m,  T0 = ", TD0, " K   carrier: Tc = ", TC, " K")
 
 errA, τA = caseA(Δt, 10.0)
 errB = caseBC(Δt, 2.0, NoEvaporation(),
-              "CASE B -- gravity, NoEvaporation  (conditions of the coupled run)")
+    "CASE B -- gravity, NoEvaporation  (conditions of the coupled run)")
 errC = caseBC(Δt, 2.0, Evaporation(),
-              "CASE C -- gravity, Evaporation on  (REF is the no-evaporation ODE)")
+    "CASE C -- gravity, Evaporation on  (REF is the no-evaporation ODE)")
 
 banner("VERDICT")
 # Two things bound how close the shipped scheme can come to REF, and the
@@ -298,15 +330,16 @@ banner("VERDICT")
 absorption = eps(scalar(TD0))/(2*Δt/τA)
 tol = max(1e-3, 1.5*absorption)
 println("  absorption floor ulp/(2Dt/tau) = ",
-        round(absorption, sigdigits=3), " K")
-println("  tolerance on |ST - REF|: ", round(tol, sigdigits=3), " K")
+    round(absorption, sigdigits = 3), " K")
+println("  tolerance on |ST - REF|: ", round(tol, sigdigits = 3), " K")
 for (name, e) in (("A (g=0)", errA), ("B (falling)", errB))
-    println("  case ", rpad(name, 12), " max|ST-REF| = ", rpad(round(e, sigdigits=4), 12),
-            e < tol ? "PASS" : "FAIL")
+    println("  case ", rpad(name, 12), " max|ST-REF| = ",
+        rpad(round(e, sigdigits = 4), 12),
+        e < tol ? "PASS" : "FAIL")
 end
 println()
 println("  Case C is reported for information only: its reference omits",
-        " evaporation.")
+    " evaporation.")
 
 # The exit status gates a run, so the test driver can read it; case C is
 # informational and does not take part

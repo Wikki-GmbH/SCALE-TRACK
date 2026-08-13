@@ -103,8 +103,8 @@ end
 @inline function substep(model::StokesFlow, parcel, carrier, state0, Δt)
     props = parcel.props
     dragFactor = 18SCL*model.μᶜ*Δt/(model.ρᵈ*props.⌀^2)
-    velNew = (parcel.vel .+ dragFactor.*carrier.U)./(1 + dragFactor)
-    posNew = parcel.pos .+ velNew.*Δt
+    velNew = (parcel.vel .+ dragFactor .* carrier.U) ./ (1 + dragFactor)
+    posNew = parcel.pos .+ velNew .* Δt
     return (ParcelState(posNew, velNew, props), state0)
 end
 

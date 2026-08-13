@@ -43,8 +43,8 @@ coupled_field_size(::AsyncMode) = Int(prod(mesh.partitionN))
 coupled_field_size(::SyncMode) = Int(prod(mesh.N))
 
 function allocate_array_j(
-        name::Cstring, size::Cint, nComponents::Cint, typeByteSize::Cint
-    )::Ptr{Cdouble}
+    name::Cstring, size::Cint, nComponents::Cint, typeByteSize::Cint
+)::Ptr{Cdouble}
     GC.@preserve name nameSymbol = Symbol(unsafe_string(pointer(name)))
     print("Allocating $nameSymbol\n")
 
@@ -221,8 +221,8 @@ function evolve_cloud(Δt, ::SyncMode)
     end
     global firstPass = false
     println("Lagrangian solver timings: current evolve = ",
-        round(tEvolve, sigdigits=4), " s; total time = ",
-        round(totalTime, sigdigits=4), " s"
+        round(tEvolve, sigdigits = 4), " s; total time = ",
+        round(totalTime, sigdigits = 4), " s"
     )
     return nothing
 end
@@ -338,9 +338,9 @@ function init_async_tracking!(
     global comm = initComm(executor)
 
     println("Loaded modules in ",
-        round(reg["ΔtLoadModules"]; sigdigits=4), " s")
+        round(reg["ΔtLoadModules"]; sigdigits = 4), " s")
     println("Initialized methods in ",
-        round(reg["ΔtInitMethods"]; sigdigits=4), " s")
+        round(reg["ΔtInitMethods"]; sigdigits = 4), " s")
     println("Julia active project: ", Base.active_project())
     tNow = time()
 
@@ -455,7 +455,7 @@ function init_sync_tracking!(
     global model = modelArg
 
     println("Loaded modules in ",
-        round(reg["ΔtLoadModules"]; sigdigits=4), " s")
+        round(reg["ΔtLoadModules"]; sigdigits = 4), " s")
     tNow = time()
 
     @show model
@@ -509,7 +509,7 @@ end
 
 # Exercise the tracking without OpenFOAM: freeze a random velocity field and
 # run a few evolve steps
-function standalone_run!(nSteps=2, Δt=1e-3)
+function standalone_run!(nSteps = 2, Δt = 1e-3)
     randomize_velocity!()
     tNow = time()
     for _ in 1:nSteps

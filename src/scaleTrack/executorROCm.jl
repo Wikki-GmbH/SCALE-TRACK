@@ -102,4 +102,4 @@ function kernel_config(kernel, ::ROCmGPU)
 end
 
 launch_kernel!(kernel, args, threads, blocks, ::ROCmGPU) =
-    kernel(args...; groupsize=threads, gridsize=blocks)
+    kernel(args...; groupsize = threads, gridsize = blocks)

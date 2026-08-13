@@ -69,7 +69,7 @@ end
 # On the first call taskThreadIds may be passed to record which OS thread
 # each task lands on.
 function evolve_chunk!(
-    chunk, model, taskEulerian, mesh, executor::CPU; taskThreadIds=nothing
+    chunk, model, taskEulerian, mesh, executor::CPU; taskThreadIds = nothing
 )
     nSteps = chunk.nSubSteps
     ΔtP = chunk.time[1].Δt / nSteps

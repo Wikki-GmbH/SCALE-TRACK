@@ -1,0 +1,31 @@
+# Formatting rules for the Julia sources, applied by JuliaFormatter.
+#
+# The style is minimal on purpose: it settles indentation, spacing and the
+# margin, and leaves the rest of the source as written.  The library is dense
+# in arithmetic, where the tight spacing of a product against a spaced sum
+# carries the precedence, and where a column of assignments is read against
+# the equations it transcribes -- both survive this configuration and neither
+# survives an opinionated one.
+#
+#     julia -e 'using JuliaFormatter; format(".")'
+#     julia -e 'using JuliaFormatter; exit(format(".", overwrite = false) ? 0 : 1)'
+
+style                     = "minimal"
+
+# The margin the sources are written to
+margin                    = 80
+
+# Keep a column of assignments, struct fields or branches aligned where the
+# author aligned them
+align_assignment          = true
+align_struct_field        = true
+align_conditional         = true
+
+# Spaces around = in keyword arguments and in type parameter lists, as the
+# sources already have them
+whitespace_in_kwargs      = true
+whitespace_typedefs       = true
+whitespace_ops_in_indices = true
+
+# Blank lines are the author's
+remove_extra_newlines     = false
