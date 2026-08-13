@@ -15,12 +15,6 @@
     the continuous phase belongs to OpenFOAM.  What is modelled here is one
     particle relaxing towards it, over a relaxation time set by the particle's
     diameter and density and the carrier's viscosity.
-
-    Everything a physics model contributes is dispatched on the model type:
-    its Eulerian field set, the per-parcel arrays it needs, the mapping
-    between those arrays and the state a sub-step advances, the carrier state
-    read at the parcel's cell, the sub-step physics with its source
-    accumulator, and the source extrapolator it defaults to.
 =#
 
 struct StokesParticle
