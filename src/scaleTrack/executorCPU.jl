@@ -175,10 +175,42 @@ function evolve_all_chunks!(
             control
         )
     end
-    # Reduce the task-private sources into the compute copies
-    for te in state.task
+    reduce_all_sources!(state)
+    return nothing
+end
+
+# Add every task's source buffers into the compute copies.  The cells are
+# split over the tasks and each task sums every contribution to its own slice,
+# so the reduction costs one traversal of a field rather than one per task --
+# otherwise it grows with the thread count while the parcel work it enables
+# shrinks, and the two cross at a handful of threads.  The slices are disjoint,
+# so the writes do not race.
+function reduce_all_sources!(state::CPUMasterState)
+    nTasks = length(state.task)
+    if nTasks == 1
         for r in eachindex(state.compute)
-            reduce_sources!(state.compute[r], te[r])
+            reduce_sources!(state.compute[r], state.task[1][r])
+        end
+        return nothing
+    end
+    for r in eachindex(state.compute)
+        compute = state.compute[r]
+        E = typeof(compute)
+        for f in source_fields(E)
+            dst = getfield(compute, f)
+            n = length(dst)
+            @sync for tid in 1:nTasks
+                Threads.@spawn :default begin
+                    iBegin = div(n*(tid - 1), nTasks) + 1
+                    iEnd = div(n*tid, nTasks)
+                    @inbounds for t in 1:nTasks
+                        src = getfield(state.task[t][r], f)
+                        @simd for i in iBegin:iEnd
+                            dst[i] += src[i]
+                        end
+                    end
+                end
+            end
         end
     end
     return nothing
