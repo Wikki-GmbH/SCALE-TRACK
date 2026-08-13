@@ -6,7 +6,8 @@
     Copyright (C) 2024-2026 Henrik Rusche
 =#
 
-# Auxiliary methods: timing helpers and debug printing
+# Timing of the coupling.  What is measured, where each series is taken,
+# and how the run's summary and its samples are written out.
 
 function timing(t, s)
     dt = round(time() - t, sigdigits = 4)

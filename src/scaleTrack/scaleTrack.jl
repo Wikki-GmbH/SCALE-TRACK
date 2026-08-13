@@ -103,7 +103,7 @@ if !isdefined(Main, :label)
     const label = Int32
 end
 
-include("util.jl")
+include("timings.jl")
 include("mpi.jl")
 include("hilbert.jl")
 include("types.jl")
