@@ -55,3 +55,24 @@ function comm_wait(req::MPI.Request)
         yield()
     end
 end
+
+# Debug communication logging.  If true, log to stdout from every rank
+# prefixed by [rank].  May be overridden by defining the constant before
+# including the library.
+if !isdefined(Main, :DebugComm)
+    const DebugComm = false
+end
+
+# Print from every rank, prefixed by the rank.  With the flag off the
+# macro expands to nothing, so a production run carries no overhead.
+macro debugCommPrintln(ex)
+    if DebugComm
+        # Put message into a single string before printing to avoid output
+        # overlap
+        msg = :(Main.Base.inferencebarrier(Main.Base.string)(
+            "[", comm.rank, "] ", $(esc(ex)), "\n"
+        ))
+        return :(print($msg))
+    end
+    return nothing
+end

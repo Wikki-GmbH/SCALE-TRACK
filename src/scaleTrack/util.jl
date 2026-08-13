@@ -8,13 +8,6 @@
 
 # Auxiliary methods: timing helpers and debug printing
 
-# Debug communication logging.  If true, log to stdout from every rank
-# prefixed by [rank].  May be overridden by defining the constant before
-# including the library.
-if !isdefined(Main, :DebugComm)
-    const DebugComm = false
-end
-
 function timing(t, s)
     dt = round(time() - t, sigdigits = 4)
     println(s, " in ", dt, " s")
@@ -158,20 +151,6 @@ timings_write_due(iStep) =
     reg["timingsWriteInterval"] > 0 &&
     iStep > nSkipTimingSteps &&
     iStep % reg["timingsWriteInterval"] == 0
-
-# Macro for printing debug statements.  Enable by setting global DebugComm to
-# true.  If disabled, all debug printing is turned off with zero overhead.
-macro debugCommPrintln(ex)
-    if DebugComm
-        # Put message into a single string before printing to avoid output
-        # overlap
-        msg = :(Main.Base.inferencebarrier(Main.Base.string)(
-            "[", comm.rank, "] ", $(esc(ex)), "\n"
-        ))
-        return :(print($msg))
-    end
-    return nothing
-end
 
 # Coupling steps between two cloud summaries; 0 disables them.  Matches the
 # reporting interval a Lagrangian cloud solution offers.  May be overridden
