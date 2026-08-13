@@ -39,7 +39,7 @@
 const scalar = Float64
 const label = Int32
 
-include(joinpath(@__DIR__, "../../src/scaleTrack/scaleTrack.jl"))
+include(joinpath(@__DIR__, "../src/scaleTrack/scaleTrack.jl"))
 
 # ------------------------------------------------------------------- the cube
 const NBITS = 1:5           # 8 to 32768 points; exhaustive at each

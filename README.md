@@ -72,10 +72,12 @@ scale of its own, so tolerances are relative to the peak of the series.
 julia --project=. test/runtests.jl
 ```
 
-Runs anywhere — no OpenFOAM, no GPU, a few minutes.  Two of the checks are
-verification against analytic or accurately-integrated references; two are
-regressions against golden checksums.  CI runs them on every push, together
-with a formatting check.
+Runs anywhere — no OpenFOAM, no GPU, a few minutes.  Three of the checks are
+verification against analytic or accurately-integrated references, one holds
+the result independent of the thread count, and one is a regression against a
+recorded checksum.  CI runs them on every push, together with a formatting
+check.  `test/gpuExecutorCheck.jl` sits beside them but needs a device, so the
+suite leaves it to be run by hand.
 
 ## Citing
 

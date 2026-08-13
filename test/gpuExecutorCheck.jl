@@ -44,7 +44,7 @@ const gpuBackend =
     (length(ARGS) >= 2 && lowercase(ARGS[2]) == "rocm") ? :ROCm : :CUDA
 const MODELARG = length(ARGS) >= 3 ? lowercase(ARGS[3]) : "both"
 
-include(joinpath(@__DIR__, "../../src/scaleTrack/scaleTrack.jl"))
+include(joinpath(@__DIR__, "../src/scaleTrack/scaleTrack.jl"))
 
 # ---------------------------------------------------------------- parameters
 const NPARCELS = 100_000

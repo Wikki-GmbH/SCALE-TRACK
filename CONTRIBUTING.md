@@ -17,9 +17,8 @@ it, which is the order the dependency requires.
 built single precision with 32-bit labels, because the tracking library
 defines its scalar as `Float32` and its label as `Int32`.  Fields are shared
 by pointer, so a double-precision build corrupts data rather than failing to
-link.  The cavity3D case under `test/` is the exception: it sets
-`scalar = Float64` and runs only against a double-precision OpenFOAM, so it
-needs its own build of the tree rather than the one `Allwmake` produces here.
+link.  A check that does not couple to OpenFOAM is free to choose, and some do
+run in double precision -- the constraint is on the pair, not on the library.
 
 ## The Julia environment
 

@@ -53,7 +53,7 @@ const PRECISION = isempty(ARGS) ? "DP" : uppercase(ARGS[1])
 const scalar = PRECISION == "SP" ? Float32 : Float64
 const label = Int32
 
-include(joinpath(@__DIR__, "../../src/scaleTrack/scaleTrack.jl"))
+include(joinpath(@__DIR__, "../src/scaleTrack/scaleTrack.jl"))
 
 # ---------------------------------------------------------------- parameters
 # The same droplet and carrier as the coupled free-fall case, repeated here so

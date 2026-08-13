@@ -21,7 +21,7 @@ see *Precision* below.
 | `src/intermediateST_250321/` | a fork of OpenFOAM's intermediate Lagrangian library; treat as vendored |
 | `sol/` | solvers in pairs: `*JuliaParcelFoam*` couples to the library, `*ParcelFoam*` is the pure-OpenFOAM reference |
 | `run/` | cases, each with `Allrun` and `Allcheck` |
-| `test/` | checks that need neither OpenFOAM nor a GPU |
+| `test/` | the suite, which needs neither OpenFOAM nor a GPU, and one GPU check run by hand |
 
 The solvers come in pairs deliberately. Every claim about a coupled result is
 made against the same physics solved synchronously in one stack, so a

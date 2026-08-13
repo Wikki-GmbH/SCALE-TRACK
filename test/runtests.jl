@@ -72,22 +72,22 @@ mktempdir() do tmp
         # Against analytic references and against each other, so a failure means
         # the physics or the driver is wrong, not that it changed.
         @testset "single droplet against RK4" begin
-            @test run_check("test/scaleTrack/singleDropletCheck.jl", "DP")
-            @test run_check("test/scaleTrack/singleDropletCheck.jl", "SP")
+            @test run_check("test/singleDropletCheck.jl", "DP")
+            @test run_check("test/singleDropletCheck.jl", "SP")
         end
 
         @testset "sync driver against the kernel" begin
-            @test run_check("test/scaleTrack/syncDriverCheck.jl", "DP")
-            @test run_check("test/scaleTrack/syncDriverCheck.jl", "SP")
+            @test run_check("test/syncDriverCheck.jl", "DP")
+            @test run_check("test/syncDriverCheck.jl", "SP")
         end
 
         @testset "Hilbert curve" begin
-            @test run_check("test/scaleTrack/hilbertCheck.jl")
+            @test run_check("test/hilbertCheck.jl")
         end
 
-        # ----------------------------------------------------------- regression
-        # Against checksums, so a failure means the numbers moved -- which is
-        # either a mistake or a deliberate change that has not been recorded yet.
+        # ----------------------------------------------------------- invariance
+        # Two runs of the same thing against each other, so a failure means the
+        # result depends on something it must not.
         @testset "StokesParticle, thread count" begin
             # Trajectories depend only on the frozen velocity field, so the
             # particle state must be bitwise independent of the thread count.
@@ -95,7 +95,7 @@ mktempdir() do tmp
             # is not.
             serial = joinpath(tmp, "checks_serial.txt")
             nt4 = joinpath(tmp, "checks_nt4.txt")
-            script = "test/icoJuliaParcelFoam/cavity3D/testThreadedTracking.jl"
+            script = "test/threadCountCheck.jl"
 
             @test run_check(script, serial; threads = "1,1")
             @test run_check(script, nt4; threads = "4,1")
@@ -116,6 +116,10 @@ mktempdir() do tmp
             end
         end
 
+        # ----------------------------------------------------------- regression
+        # Against the one recorded checksum in the repository, so a failure
+        # means the numbers moved -- either a mistake or a deliberate change
+        # that has not been recorded yet.
         @testset "HumidAirDroplet, golden checksums" begin
             case = "run/buoyantHumidPimpleParcelFoam/freeFallCoolingEvaporation"
             golden = joinpath(ROOT, case, "checks_humid.txt")

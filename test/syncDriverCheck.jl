@@ -39,7 +39,7 @@ const EVAPARG = length(ARGS) >= 2 ? lowercase(ARGS[2]) : "both"
 const scalar = PRECISION == "SP" ? Float32 : Float64
 const label = Int32
 
-include(joinpath(@__DIR__, "../../src/scaleTrack/scaleTrack.jl"))
+include(joinpath(@__DIR__, "../src/scaleTrack/scaleTrack.jl"))
 
 # ---------------------------------------------------------------- parameters
 const TC   = 293.15        # carrier temperature [K]        (frozen)
