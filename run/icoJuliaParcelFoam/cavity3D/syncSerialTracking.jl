@@ -39,7 +39,7 @@ init_sync_tracking!(
     nParcels = 100_000,
 
     # Mesh description; must be consistent with the case's mesh
-    nCellsPerDirection = 20,
+    nCellsPerDirection = 40,
     origin = 0.0,
     ending = 1.0,
 )
