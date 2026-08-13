@@ -121,7 +121,7 @@ mktempdir() do tmp
         # means the numbers moved -- either a mistake or a deliberate change
         # that has not been recorded yet.
         @testset "HumidAirDroplet, golden checksums" begin
-            case = "run/buoyantHumidPimpleParcelFoam/freeFallCoolingEvaporation"
+            case = "run/buoyantHumidPimpleSTParcelFoam/freeFallCoolingEvaporation"
             golden = joinpath(ROOT, case, "checks_humid.txt")
             written = joinpath(tmp, "checks_humid.txt")
 

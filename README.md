@@ -20,8 +20,8 @@ decomposition constrains the other.
 | Path | |
 |---|---|
 | `src/scaleTrack/` | the tracking library, in Julia |
-| `src/intermediateST_250321/` | a fork of OpenFOAM's intermediate Lagrangian library, with a droplet parcel that exchanges heat and vapour mass |
-| `sol/` | the solvers, in pairs: `*JuliaParcelFoam*` couples to the tracking library, `*ParcelFoam*` is the pure-OpenFOAM reference |
+| `src/lagrangianIntermediateOpenFOAM/` | a fork of OpenFOAM's intermediate Lagrangian library, with a droplet parcel that exchanges heat and vapour mass |
+| `sol/` | the solvers, in pairs: `*STParcelFoam*` couples to the tracking library, `*ParcelFoam*` is the pure-OpenFOAM reference |
 | `run/` | cases, each with `Allrun` to run both solvers and `Allcheck` to judge the two against each other |
 | `test/` | the checks that need neither OpenFOAM nor a GPU |
 
@@ -59,7 +59,7 @@ environment by walking up from the case directory, so a case carries nothing.
 ## Running a case
 
 ```sh
-cd run/buoyantHumidPimpleParcelFoam/hotRoom
+cd run/buoyantHumidPimpleSTParcelFoam/hotRoom
 ./Allrun      # both solvers, on the same case
 ./Allcheck    # compares them, non-zero exit on failure
 ./Allclean
@@ -90,9 +90,9 @@ as the code.
 
 ## Licence
 
-GPL-3.0-or-later; see `LICENSE`.  `src/intermediateST_250321` is a fork of
-OpenFOAM code and carries the copyright of the OpenFOAM Foundation and OpenCFD
-Ltd. alongside this project's.
+GPL-3.0-or-later; see `LICENSE`.  `src/lagrangianIntermediateOpenFOAM` is a
+fork of OpenFOAM code and carries the copyright of the OpenFOAM Foundation and
+OpenCFD Ltd. alongside this project's.
 
 OPENFOAM is a registered trademark of OpenCFD Limited, producer of the
 OpenFOAM software.  This offering is not approved or endorsed by OpenCFD

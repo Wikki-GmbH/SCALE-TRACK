@@ -10,7 +10,7 @@
 
 #=
     StokesParticle physics model: momentum-only two-way coupling with implicit
-    Euler integration of Stokes drag.  The physics of the icoJuliaParcelFoam
+    Euler integration of Stokes drag.  The physics of the icoSTParcelFoam
     solver family.
 
     The carrier velocity is read at the parcel's cell and never solved for --

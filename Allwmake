@@ -9,10 +9,10 @@ cd "${0%/*}" || exit                                # Run from this directory
 # library, which is single precision with 32-bit labels.
 #------------------------------------------------------------------------------
 
-wmake libso src/intermediateST_250321 || exit
+wmake libso src/lagrangianIntermediateOpenFOAM || exit
 
-wmake sol/buoyantHumidPimpleParcelFoam_250321      || exit
-wmake sol/buoyantHumidPimpleJuliaParcelFoam_250321 || exit
-wmake sol/icoJuliaParcelFoam                       || exit
+wmake sol/buoyantHumidPimpleParcelFoam      || exit
+wmake sol/buoyantHumidPimpleSTParcelFoam || exit
+wmake sol/icoSTParcelFoam                       || exit
 
 #------------------------------------------------------------------------------

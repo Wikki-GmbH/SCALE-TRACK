@@ -3,9 +3,9 @@ cd "${0%/*}" || exit                                # Run from this directory
 . ${WM_PROJECT_DIR:?}/bin/tools/CleanFunctions      # Tutorial clean functions
 #------------------------------------------------------------------------------
 
-wclean sol/icoJuliaParcelFoam
-wclean sol/buoyantHumidPimpleJuliaParcelFoam_250321
-wclean sol/buoyantHumidPimpleParcelFoam_250321
-wclean libso src/intermediateST_250321
+wclean sol/icoSTParcelFoam
+wclean sol/buoyantHumidPimpleSTParcelFoam
+wclean sol/buoyantHumidPimpleParcelFoam
+wclean libso src/lagrangianIntermediateOpenFOAM
 
 #------------------------------------------------------------------------------

@@ -7,6 +7,6 @@ SCALE-TRACK is developed by
 The per-file copyright headers record who holds copyright in each file and
 over which years.
 
-src/intermediateST_250321 is a fork of the intermediate Lagrangian library of
-OpenFOAM and carries the copyright of the OpenFOAM Foundation and OpenCFD Ltd.
-alongside this project's.
+src/lagrangianIntermediateOpenFOAM is a fork of the intermediate Lagrangian
+library of OpenFOAM and carries the copyright of the OpenFOAM Foundation and
+OpenCFD Ltd. alongside this project's.

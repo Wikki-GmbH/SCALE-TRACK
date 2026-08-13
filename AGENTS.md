@@ -18,8 +18,8 @@ see *Precision* below.
 | Path | |
 |---|---|
 | `src/scaleTrack/` | the tracking library, in Julia |
-| `src/intermediateST_250321/` | a fork of OpenFOAM's intermediate Lagrangian library; treat as vendored |
-| `sol/` | solvers in pairs: `*JuliaParcelFoam*` couples to the library, `*ParcelFoam*` is the pure-OpenFOAM reference |
+| `src/lagrangianIntermediateOpenFOAM/` | a fork of OpenFOAM's intermediate Lagrangian library; treat as vendored |
+| `sol/` | solvers in pairs: `*STParcelFoam*` couples to the library, `*ParcelFoam*` is the pure-OpenFOAM reference |
 | `run/` | cases, each with `Allrun` and `Allcheck` |
 | `test/` | the suite, which needs neither OpenFOAM nor a GPU, and one GPU check run by hand |
 

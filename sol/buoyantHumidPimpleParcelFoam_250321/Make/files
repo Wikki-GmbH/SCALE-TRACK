@@ -1,3 +1,0 @@
-buoyantHumidPimpleParcelFoam.C
-
-EXE = $(FOAM_USER_APPBIN)/buoyantHumidPimpleParcelFoam_250321

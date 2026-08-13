@@ -1,0 +1,30 @@
+#!/bin/sh
+cd "${0%/*}" || exit                                # Run from this directory
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+
+restore0Dir
+runApplication blockMesh
+runApplication topoSet
+
+# The rank count used here must be one the tracking script has a Lagrangian
+# decomposition for.  The two solvers can be decomposed separately to run them
+# at different rank counts.
+#
+# Under MPI the ranks have to be launched unbound, or every tracking thread of
+# a rank is folded onto the one core the rank was pinned to.
+runApplication decomposePar
+runParallel buoyantHumidPimpleSTParcelFoam
+runParallel buoyantHumidPimpleParcelFoam
+
+# Carrier temperature and vapour density, and the vapour mass of the room
+grep "T min" log.buoyantHumidPimpleSTParcelFoam | sed -n '0~5p' >minmaxT_ST.csv
+grep "T min" log.buoyantHumidPimpleParcelFoam | sed -n '0~5p' >minmaxT_OF.csv
+
+grep "rhoV min" log.buoyantHumidPimpleSTParcelFoam | sed -n '0~5p' >minmaxrhoV_ST.csv
+grep "rhoV min" log.buoyantHumidPimpleParcelFoam | sed -n '0~5p' >minmaxrhoV_OF.csv
+
+grep 'H2O mass' log.buoyantHumidPimpleSTParcelFoam | sed -n '0~3p' >integralrhoV_ST.csv
+grep 'H2O mass' log.buoyantHumidPimpleParcelFoam | sed -n '0~3p' >integralrhoV_OF.csv
+
+#------------------------------------------------------------------------------

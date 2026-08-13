@@ -1,5 +1,0 @@
-juliaHelper.c
-icoJuliaParcelFoam.C
-juliaWrapper.C
-
-EXE = $(FOAM_USER_APPBIN)/icoJuliaParcelFoam
