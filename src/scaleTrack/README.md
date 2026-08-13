@@ -48,7 +48,7 @@ with no environment step in between.
 | `extrapolator.jl` | what stands in for a source between the steps that produce one |
 | `control.jl` | the locks and events the solver thread and the tracking task hand over on |
 | `ranks.jl` | rank roles and the communicators |
-| `mpi.jl` | allocation-free MPI wrappers, and the debug logging |
+| `mpiWrappers.jl` | allocation-free MPI wrappers, and the communication debug logging |
 | `model.jl` | what a physics model must provide, and the fallbacks it need not |
 | `parcels.jl` | the model-independent evolve skeleton |
 | `parcelInit.jl` | how a chunk's parcels start out |

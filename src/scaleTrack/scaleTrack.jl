@@ -106,7 +106,7 @@ if !isdefined(Main, :label)
 end
 
 include("timings.jl")
-include("mpi.jl")
+include("mpiWrappers.jl")
 include("hilbert.jl")
 include("types.jl")
 include("executor.jl")
