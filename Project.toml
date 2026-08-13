@@ -1,5 +1,5 @@
-# Shared Julia environment for the whole repository.
-# (Deliberately no name/uuid: this is an environment, not a package.)
+# The SCALE-TRACK package, and the shared environment of the repository:
+# the solvers and the cases resolve against this same file.
 #
 # The solvers boot the embedded runtime with `--project=@.`, which walks up
 # from the case directory until it finds a Project.toml -- so every case under
@@ -18,6 +18,10 @@
 #
 # NOTE: keep this file's comments -- `Pkg.add` rewrites the file and strips
 # them, so restore them after any Pkg operation.
+
+name = "ScaleTrack"
+uuid = "bd188df1-2409-4d1a-a55f-acfbd5fbf1b0"
+version = "0.1.0"
 
 [deps]
 AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
