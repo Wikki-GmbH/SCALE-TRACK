@@ -86,3 +86,8 @@ doc/Doxygen/DTAGS
 # The shared environment's Project.toml/Manifest.toml ARE tracked; this is
 # generated per machine by MPIPreferences.use_system_binary().
 LocalPreferences.toml
+
+# Particle output of the tracking, written into the directory the case is run
+# from.  The two are one artefact: the collection indexes the series.
+dataVTK/
+particleTimeSeries.pvd
