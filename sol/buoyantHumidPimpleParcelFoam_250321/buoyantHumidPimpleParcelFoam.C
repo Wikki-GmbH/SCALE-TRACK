@@ -5,6 +5,8 @@
     \\  /    A nd           | www.openfoam.com
      \\/     M anipulation  |
 -------------------------------------------------------------------------------
+    SPDX-License-Identifier: GPL-3.0-or-later
+
     Copyright (C) 2011-2017 OpenFOAM Foundation
     Copyright (C) 2021 OpenCFD Ltd.
     Copyright (C) 2025 Silvio Schmalfuß

@@ -1,4 +1,6 @@
 #=
+    SPDX-License-Identifier: GPL-3.0-or-later
+
     SCALE-TRACK
 
     SCALE-TRACK is advancing two-way coupled Euler-Lagrange particle tracking

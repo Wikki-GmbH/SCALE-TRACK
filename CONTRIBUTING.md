@@ -51,8 +51,8 @@ them on a machine that has both, with the `Allrun` and `Allcheck` of the case.
 
 ## Comments and commit messages
 
-`CONVENTIONS.md` carries the rules, and they are not decorative — the history
-was rewritten once to bring it into line with them.  In short:
+These rules are not decorative — the history was rewritten once to bring it
+into line with them:
 
 - A comment explains the line or block it sits on.  Where it must point at
   other code it names the concept, not a file, a function or a dictionary key.

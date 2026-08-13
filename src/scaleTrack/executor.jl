@@ -1,4 +1,6 @@
 #=
+    SPDX-License-Identifier: GPL-3.0-or-later
+
     This file is part of SCALE-TRACK, distributed under the GNU GPL v3 or
     later.  See scaleTrack.jl or <http://www.gnu.org/licenses/> for details.
 
