@@ -86,7 +86,7 @@ mktempdir() do tmp
         # ----------------------------------------------------------- regression
         # Against checksums, so a failure means the numbers moved -- which is
         # either a mistake or a deliberate change that has not been recorded yet.
-        @testset "StokesFlow, thread count" begin
+        @testset "StokesParticle, thread count" begin
             # Trajectories depend only on the frozen velocity field, so the
             # particle state must be bitwise independent of the thread count.
             # The momentum source need not be: its per-cell accumulation order

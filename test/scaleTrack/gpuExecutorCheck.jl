@@ -26,7 +26,7 @@
 
     Needs a GPU.  Synchronous mode only: no MPI, no async, no OpenFOAM.
 
-    Both physics models are covered: StokesFlow exercises the momentum
+    Both physics models are covered: StokesParticle exercises the momentum
     source alone, HumidAirDroplet additionally the thermal energy and mass
     sources, i.e. the scalar-field atomics next to the vector-field ones.
 
@@ -71,7 +71,7 @@ const TC   = 293.15      # carrier temperature [K]
 const RHOV = 0.00865     # carrier vapour density [kg/m^3]
 const TD0  = 296.15      # initial droplet temperature [K]
 
-make_model(::Val{:stokes}) = StokesFlow(
+make_model(::Val{:stokes}) = StokesParticle(
     μᶜ = 1e-3,  # continuous phase dynamic viscosity
     ρᶜ = 1e3,   # continuous phase density
     ρᵈ = 1.0,   # disperse phase density

@@ -10,7 +10,7 @@
     Case- and C++-facing API.
 
     A case script includes scaleTrack.jl, constructs a physics model
-    (StokesFlow or HumidAirDroplet) and calls one of the two drivers:
+    (StokesParticle or HumidAirDroplet) and calls one of the two drivers:
 
     - init_async_tracking!(executor, model; ...): the production coupling.
       The tracking runs asynchronously with respect to the OpenFOAM time

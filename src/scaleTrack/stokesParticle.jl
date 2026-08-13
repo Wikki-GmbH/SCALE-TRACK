@@ -7,9 +7,14 @@
 =#
 
 #=
-    StokesFlow physics model: momentum-only two-way coupling with implicit
+    StokesParticle physics model: momentum-only two-way coupling with implicit
     Euler integration of Stokes drag.  The physics of the icoJuliaParcelFoam
     solver family.
+
+    The carrier velocity is read at the parcel's cell and never solved for --
+    the continuous phase belongs to OpenFOAM.  What is modelled here is one
+    particle relaxing towards it, over a relaxation time set by the particle's
+    diameter and density and the carrier's viscosity.
 
     Everything a physics model contributes is dispatched on the model type:
     its Eulerian field set, the per-parcel arrays it needs, the mapping
@@ -18,13 +23,13 @@
     accumulator, and the source extrapolator it defaults to.
 =#
 
-struct StokesFlow
+struct StokesParticle
     μᶜ::scalar      # dynamic viscosity (continuous phase)
     ρᵈ::scalar      # density (disperse phase)
     ρᵈByρᶜ::scalar  # density ratio disperse/continuous
 end
 
-StokesFlow(; μᶜ, ρᶜ, ρᵈ) = StokesFlow(μᶜ, ρᵈ, ρᵈ/ρᶜ)
+StokesParticle(; μᶜ, ρᶜ, ρᵈ) = StokesParticle(μᶜ, ρᵈ, ρᵈ/ρᶜ)
 
 # The Eulerian fields of one partition coupled in both directions: the carrier
 # velocity U is read by the tracking, the momentum source UTrans is written
@@ -47,22 +52,22 @@ Adapt.@adapt_structure TwoWayEulerian
 carrier_fields(::Type{<:TwoWayEulerian}) = (:U,)
 source_fields(::Type{<:TwoWayEulerian}) = (:UTrans,)
 
-host_eulerian_type(::StokesFlow) = TwoWayEulerian{VectorField}
-device_eulerian_type(::StokesFlow, ex::GPU) =
+host_eulerian_type(::StokesParticle) = TwoWayEulerian{VectorField}
+device_eulerian_type(::StokesParticle, ex::GPU) =
     TwoWayEulerian{device_vector_type(ex, ScalarVec)}
-device_eulerian_ptr_type(::StokesFlow, ex::GPU) =
+device_eulerian_ptr_type(::StokesParticle, ex::GPU) =
     TwoWayEulerian{device_ptr_vector_type(ex, ScalarVec)}
 
 # No model-specific per-particle arrays
-parcel_props(::StokesFlow, ::Type{T}, N) where {T} = (;)
+parcel_props(::StokesParticle, ::Type{T}, N) where {T} = (;)
 
-default_extrapolator(model::StokesFlow, N) =
+default_extrapolator(model::StokesParticle, N) =
     ConstExtrapolator(host_eulerian_type(model), N)
 
 # Disperse-phase density, for the linear momentum of the cloud summary
-parcel_density(model::StokesFlow) = model.ρᵈ
+parcel_density(model::StokesParticle) = model.ρᵈ
 
-@inline function load_parcel(model::StokesFlow, c, i)
+@inline function load_parcel(model::StokesParticle, c, i)
     @inbounds begin
         ⌀ = c.d[i]
         ParcelState(
@@ -73,7 +78,7 @@ parcel_density(model::StokesFlow) = model.ρᵈ
     end
 end
 
-@inline function store_parcel!(::StokesFlow, c, i, parcel)
+@inline function store_parcel!(::StokesParticle, c, i, parcel)
     @inbounds begin
         c.X[i] = parcel.pos.x
         c.Y[i] = parcel.pos.y
@@ -85,22 +90,22 @@ end
     return nothing
 end
 
-@inline function load_carrier(::StokesFlow, eulerian, posI)
+@inline function load_carrier(::StokesParticle, eulerian, posI)
     @inbounds (U = eulerian.U[posI],)
 end
 
-@inline reload_carrier(model::StokesFlow, eulerian, posI) =
+@inline reload_carrier(model::StokesParticle, eulerian, posI) =
     load_carrier(model, eulerian, posI)
 
 # The accumulator holds the parcel state at the entry into the current cell
 # (state0): the momentum source of a cell visit is computed from the state
 # difference between cell entry and exit
-@inline function init_sources(::StokesFlow, eulerian, parcel)
+@inline function init_sources(::StokesParticle, eulerian, parcel)
     return ScalarVec(parcel.vel)
 end
 
 # Implicit Euler time integration with Stokes drag
-@inline function substep(model::StokesFlow, parcel, carrier, state0, Δt)
+@inline function substep(model::StokesParticle, parcel, carrier, state0, Δt)
     props = parcel.props
     dragFactor = 18SCL*model.μᶜ*Δt/(model.ρᵈ*props.⌀^2)
     velNew = (parcel.vel .+ dragFactor .* carrier.U) ./ (1 + dragFactor)
@@ -109,7 +114,7 @@ end
 end
 
 # Apply the change in velocity to the source due to bounce at boundary
-@inline function bounce_source(::StokesFlow, state0, velocity, componentI)
+@inline function bounce_source(::StokesParticle, state0, velocity, componentI)
     @inbounds @reset state0[componentI] -= 2SCL*velocity[componentI]
     return state0
 end
@@ -118,7 +123,7 @@ end
 # Returns the reset accumulator: the parcel state at the entry into the
 # new cell.
 @inline function flush_sources!(
-    ::StokesFlow, eulerian, state0, parcel, posI, ::CPU
+    ::StokesParticle, eulerian, state0, parcel, posI, ::CPU
 )
     @inbounds eulerian.UTrans[posI] +=
         parcel.props.mᵈByρᶜ*(state0 - parcel.vel)
@@ -126,7 +131,7 @@ end
 end
 
 @inline function flush_sources!(
-    ::StokesFlow, eulerian, state0, parcel, posI, executor::GPU
+    ::StokesParticle, eulerian, state0, parcel, posI, executor::GPU
 )
     @inbounds begin
         mᵈByρᶜ = parcel.props.mᵈByρᶜ

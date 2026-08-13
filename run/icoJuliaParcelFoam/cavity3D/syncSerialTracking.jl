@@ -26,7 +26,7 @@ executor = GPU()
 # executor = CPU()
 
 # Physical properties in SI units
-physics = StokesFlow(
+physics = StokesParticle(
     μᶜ = 1e-3,  # continuous phase dynamic viscosity
     ρᶜ = 1e3,   # continuous phase density
     ρᵈ = 1.0,   # disperse phase density
