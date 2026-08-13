@@ -28,8 +28,8 @@ made against the same physics solved synchronously in one stack, so a
 disagreement is attributable. Do not remove a reference solver or its case to
 simplify something.
 
-`src/scaleTrack/README.md` maps the library file by file, and
-`src/scaleTrack/model.jl` states what a physics model must provide.
+`src/scaleTrack/README.md` maps the library file by file and says what a
+physics model has to provide; the two shipped models are the worked examples.
 
 ## Building and testing
 

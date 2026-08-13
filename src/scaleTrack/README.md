@@ -49,7 +49,6 @@ with no environment step in between.
 | `control.jl` | the locks and events the solver thread and the tracking task hand over on |
 | `ranks.jl` | rank roles and the communicators |
 | `mpiWrappers.jl` | allocation-free MPI wrappers, and the communication debug logging |
-| `model.jl` | what a physics model must provide, and the fallbacks it need not |
 | `parcels.jl` | the model-independent evolve skeleton |
 | `parcelInit.jl` | how a chunk's parcels start out |
 | `cloudSummary.jl` | the cloud report and the gate that drops it when unused |
@@ -67,13 +66,19 @@ with no environment step in between.
 
 ## Adding a physics model
 
-`model.jl` states the interface.  A model is a value dispatched on, so what it
-owns is its Eulerian field set, the per-parcel arrays it needs, the carrier
-state read at the parcel's cell, and the sub-step physics with its source
-accumulator.  Everything else — localizing the parcel, sub-stepping, bouncing
-at the boundary, flushing the sources on a cell change — is the skeleton in
-`parcels.jl`, which every model goes through, so two models cannot drift apart
-in the parts they share.
+`stokesParticle.jl` is the interface at its smallest and `humidAirDroplet.jl`
+the same interface used fully; between them they define every method the
+tracking calls on a model, which is what a new one has to define too.  A model
+is a value dispatched on, so what it owns is its Eulerian field set, the
+per-parcel arrays it needs, the carrier state read at the parcel's cell, and
+the sub-step physics with its source accumulator.  Everything else —
+localizing the parcel, sub-stepping, bouncing at the boundary, flushing the
+sources on a cell change — is the skeleton in `parcels.jl`, which every model
+goes through, so two models cannot drift apart in the parts they share.
+
+Three of the methods have a fallback a model may leave alone: the initial
+values of its per-parcel properties, in `parcelInit.jl`, and the parcel weight
+and property names the summary reduces over, in `cloudSummary.jl`.
 
 Both shipped models take submodel type parameters, so a case that switches
 evaporation or heat transfer off compiles none of it rather than multiplying

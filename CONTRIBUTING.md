@@ -17,8 +17,9 @@ it, which is the order the dependency requires.
 built single precision with 32-bit labels, because the tracking library
 defines its scalar as `Float32` and its label as `Int32`.  Fields are shared
 by pointer, so a double-precision build corrupts data rather than failing to
-link.  `icoJuliaParcelFoam` also has a double-precision variant, used by the
-CPU test case.
+link.  The cavity3D case under `test/` is the exception: it sets
+`scalar = Float64` and runs only against a double-precision OpenFOAM, so it
+needs its own build of the tree rather than the one `Allwmake` produces here.
 
 ## The Julia environment
 
@@ -65,7 +66,8 @@ into line with them:
 
 ## Adding a physics model
 
-`src/scaleTrack/model.jl` states what a model has to provide and carries the
-fallbacks it may leave alone.  The two shipped models are the worked examples:
-`stokesParticle.jl` for the momentum-only case, `humidAirDroplet.jl` for one
-that also exchanges heat and vapour mass.
+The two shipped models are the specification: between them they define every
+method the tracking calls on a model.  `stokesParticle.jl` is the momentum-only
+case and the smaller of the two; `humidAirDroplet.jl` also exchanges heat and
+vapour mass.  `src/scaleTrack/README.md` says which of the methods have a
+fallback.

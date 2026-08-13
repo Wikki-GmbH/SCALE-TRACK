@@ -30,6 +30,10 @@ cloud_summary_due(step) = (step % CloudLogFrequency == 0)
 # Lagrangian solver reports it.  Guarded, so a run that does not ask for the
 # summary compiles none of this.
 
+# Physical particles one tracked parcel stands for.  The summary reports the
+# physical cloud, as an OpenFOAM cloud's info() does, so the extensive
+# quantities are weighted by it; a model without the notion weighs 1.
+parcel_weight(model) = 1SCL
 
 # Local extrema and momentum of one chunk.  The momentum reduction fuses into
 # one broadcast, so it costs a single temporary of the chunk's length -- one
@@ -75,6 +79,10 @@ function print_cloud_summary(s, propNames)
     flush(stdout)
     return nothing
 end
+
+# Names of the model's per-parcel property arrays, needed on ranks that hold
+# no chunks to build a matching reduction buffer
+prop_names(model) = keys(parcel_props(model, Vector{scalar}, 0))
 
 # Report the parcel state of the whole cloud.  Every rank contributes -- those
 # without chunks contribute neutral elements -- and the reduced values are

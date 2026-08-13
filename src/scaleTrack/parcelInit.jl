@@ -12,6 +12,14 @@
 # layout a case may choose instead, and the helpers both use.  A case that
 # wants its own initial state passes its own function to the driver.
 
+# Initial values of a model's per-parcel property arrays.  The drivers apply
+# this to every chunk before the initializer runs, so an initializer only has
+# to set what its case wants different.  Zero is a usable state for a property
+# that merely accumulates; one that enters a law as a divisor or an argument
+# of a nonlinear function has to give a value here, or a cloud that keeps the
+# default state cannot be evolved at all.
+init_props!(chunk, model) = foreach(a -> fill!(a, 0.0), values(chunk.props))
+
 # Default particle initialization: diameters and positions uniformly random
 # over their ranges, velocities zero, model properties as the model defines
 # them.  Cases with different initial conditions pass their own function to
