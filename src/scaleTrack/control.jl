@@ -49,3 +49,8 @@ struct Control{E <: AbstractExtrapolator}
     events::Events
     extrapolator::E
 end
+
+# Tags distinguishing the two coupling drivers; the active one is stored in
+# the global trackingMode
+struct AsyncMode end
+struct SyncMode end

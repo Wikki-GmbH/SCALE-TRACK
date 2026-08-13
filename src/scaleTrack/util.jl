@@ -151,21 +151,3 @@ timings_write_due(iStep) =
     reg["timingsWriteInterval"] > 0 &&
     iStep > nSkipTimingSteps &&
     iStep % reg["timingsWriteInterval"] == 0
-
-# Coupling steps between two cloud summaries; 0 disables them.  Matches the
-# reporting interval a Lagrangian cloud solution offers.  May be overridden
-# by defining the constant before including the library.
-if !isdefined(Main, :CloudLogFrequency)
-    const CloudLogFrequency = 0
-end
-
-# Macro guarding the cloud summary.  At a frequency of 0 the expression is
-# dropped at parse time, so a run that does not ask for the summary carries
-# neither the reductions nor a branch over them.
-macro cloudSummary(ex)
-    CloudLogFrequency > 0 ? esc(ex) : nothing
-end
-
-# Whether this coupling step is a reporting one.  The frequency is positive
-# here; a zero frequency is dropped before this is reached.
-cloud_summary_due(step) = (step % CloudLogFrequency == 0)

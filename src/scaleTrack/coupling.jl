@@ -30,11 +30,6 @@
     fields of the model's Eulerian container, looked up by name.
 =#
 
-# Tags distinguishing the two coupling drivers; the active one is stored in
-# the global trackingMode
-struct AsyncMode end
-struct SyncMode end
-
 # The Eulerian container whose fields are shared with OpenFOAM on this rank
 coupled_eulerian(::AsyncMode) = reg["eulerian"][comm.jlRank]
 coupled_eulerian(::SyncMode) = reg["eulerian"]
@@ -104,54 +99,6 @@ function trigger_gc_if_due!()
         timing(tNow, "Run garbage collection")
         println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
     end
-    return nothing
-end
-
-# Report the parcel state of the whole cloud.  Every rank contributes -- those
-# without chunks contribute neutral elements -- and the reduced values are
-# printed once, so the numbers are comparable with the reference cloud's.
-@cloudSummary function report_cloud_summary(::AsyncMode)
-    names = prop_names(model)
-    nP = length(names)
-
-    sums = zeros(Float64, 3)            # parcel count, mass, linear momentum
-    mins = fill(Inf, 1 + nP)            # diameter, then the model's props
-    maxs = fill(-Inf, 1 + nP)
-
-    if comm.isHost
-        s = combine_summaries([chunk_summary(c, model) for c in chunks])
-        sums[1] = s.N
-        sums[2] = s.mass
-        sums[3] = s.momentum
-        mins[1] = s.dMin
-        maxs[1] = s.dMax
-        for i in 1:nP
-            mins[1 + i] = s.props[i][1]
-            maxs[1 + i] = s.props[i][2]
-        end
-    end
-
-    MPI.Allreduce!(sums, MPI.SUM, comm.communicator)
-    MPI.Allreduce!(mins, MPI.MIN, comm.communicator)
-    MPI.Allreduce!(maxs, MPI.MAX, comm.communicator)
-
-    comm.isMaster || return nothing
-    print_cloud_summary(
-        (
-            N = round(Int, sums[1]),
-            dMin = mins[1],
-            dMax = maxs[1],
-            mass = sums[2],
-            momentum = sums[3],
-            props = ntuple(i -> (mins[1 + i], maxs[1 + i]), nP),
-        ),
-        names
-    )
-    return nothing
-end
-
-@cloudSummary function report_cloud_summary(::SyncMode)
-    print_cloud_summary(chunk_summary(chunk, model), keys(chunk.props))
     return nothing
 end
 
