@@ -1,0 +1,12 @@
+SCALE-TRACK is developed by
+
+    Sergey Lesnik      Wikki GmbH
+    Henrik Rusche      Wikki GmbH
+    Silvio Schmalfuß   Leibniz Institute for Tropospheric Research (TROPOS)
+
+The per-file copyright headers record who holds copyright in each file and
+over which years.
+
+src/intermediateST_250321 is a fork of the intermediate Lagrangian library of
+OpenFOAM and carries the copyright of the OpenFOAM Foundation and OpenCFD Ltd.
+alongside this project's.

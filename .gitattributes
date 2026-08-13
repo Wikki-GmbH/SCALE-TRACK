@@ -1,0 +1,7 @@
+# The vendored fork of OpenFOAM's intermediate Lagrangian library is not this
+# project's code; keep it out of the language statistics a host computes.
+src/intermediateST_250321/** linguist-vendored
+
+# OpenFOAM dictionaries and field files are text and must stay LF, whatever
+# the checkout platform does.
+* text=auto eol=lf

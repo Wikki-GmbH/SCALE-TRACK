@@ -1,0 +1,19 @@
+# The formatting rules, for editors.  What is enforced lives in
+# .JuliaFormatter.toml and in the CI job that checks it; this file only keeps
+# an editor from fighting the sources while they are being written.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 80
+
+# Field files written by OpenFOAM, not by hand
+[run/**/0.orig/*]
+indent_style = unset
+trim_trailing_whitespace = false
+max_line_length = unset

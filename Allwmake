@@ -1,0 +1,18 @@
+#!/bin/sh
+cd "${0%/*}" || exit                                # Run from this directory
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+# The library first: both buoyant solvers link against it.
+#
+# julia must be on PATH -- the solvers embed the runtime and their build asks
+# julia-config.jl for the flags.  The precision has to match the tracking
+# library, which is single precision with 32-bit labels.
+#------------------------------------------------------------------------------
+
+wmake libso src/intermediateST_250321 || exit
+
+wmake sol/buoyantHumidPimpleParcelFoam_250321      || exit
+wmake sol/buoyantHumidPimpleJuliaParcelFoam_250321 || exit
+wmake sol/icoJuliaParcelFoam                       || exit
+
+#------------------------------------------------------------------------------

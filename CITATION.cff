@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+title: SCALE-TRACK
+message: >-
+  If you use this software, please cite both the software and the paper it
+  accompanies.
+type: software
+authors:
+  - given-names: Sergey
+    family-names: Lesnik
+    affiliation: Wikki GmbH
+  - given-names: Henrik
+    family-names: Rusche
+    affiliation: Wikki GmbH
+  - given-names: Silvio
+    family-names: Schmalfuß
+    affiliation: Leibniz Institute for Tropospheric Research (TROPOS)
+abstract: >-
+  Asynchronous two-way coupled Euler-Lagrange particle tracking for
+  heterogeneous architectures.  The continuous phase is solved by OpenFOAM on
+  CPUs; the dispersed phase is tracked in Julia on GPUs.  The coupling
+  algorithm removes the synchronisation barrier between the two by
+  extrapolating the source terms and by decomposing the Lagrangian phase
+  independently of the Eulerian one.
+license: GPL-3.0-or-later
+repository-code: https://github.com/wikki-gmbh/scale-track
+preferred-citation:
+  type: article
+  title: >-
+    Asynchronous two-way coupled Euler-Lagrange particle tracking on
+    heterogeneous architectures
+  authors:
+    - given-names: Sergey
+      family-names: Lesnik
+    - given-names: Henrik
+      family-names: Rusche
+  journal: arXiv
+  identifiers:
+    - type: other
+      value: arXiv:2603.26691
