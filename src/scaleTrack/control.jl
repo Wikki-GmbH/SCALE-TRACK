@@ -41,59 +41,11 @@ struct Events
     Events() = new(Event(true), Event(true), Event(true), Event(true))
 end
 
-# Extrapolation of sources
-abstract type AbstractExtrapolator end
-
-# Constant extrapolator: holds one "previous true source" array per source
-# field of the Eulerian container (keyed by field name)
-struct ConstExtrapolator{P} <: AbstractExtrapolator
-    prev::P
-end
-
-function ConstExtrapolator(::Type{E}, N::Real) where {E}
-    prev = NamedTuple{source_fields(E)}(
-        map(source_fields(E)) do f
-            arr = fieldtype(E, f)(undef, N)
-            fill!(arr, zero(eltype(arr)))
-            arr
-        end
-    )
-    ConstExtrapolator(prev)
-end
-
-# No extrapolation: the sources are passed on unmodified
-struct NoExtrapolator <: AbstractExtrapolator end
-
+# The synchronization state the solver thread and the tracking task share,
+# together with the extrapolator that stands in for the source between the
+# steps the tracking produces one
 struct Control{E <: AbstractExtrapolator}
     locks::Locks
     events::Events
     extrapolator::E
 end
-
-# Constant extrapolator assumes that the current source is the same as the true
-# from the previous time step.  The estimated source from the previous time
-# step is corrected using the true source from the previous time step.
-# estSⁿ = trueSⁿ⁻¹ - estSⁿ⁻¹ + extrapSⁿ, with extrapSⁿ = trueSⁿ⁻¹
-function estimate_source!(eulerian, extrapolator::ConstExtrapolator)
-    for f in keys(extrapolator.prev)
-        curr = getfield(eulerian, f)
-        prev = getfield(extrapolator.prev, f)
-        curr .= 2.0 .* curr .- prev
-        for i in eachindex(prev)
-            @inbounds prev[i] = curr[i]
-        end
-    end
-    return nothing
-end
-
-estimate_source!(eulerian, ::NoExtrapolator) = nothing
-
-# Resolve the extrapolator a case asked for.  Accepted are nothing (use the
-# model's default), a ready instance, or a type to be constructed for this
-# model and partition size -- the last lets a case select an extrapolator
-# without knowing the partition size.
-make_extrapolator(::Nothing, model, N) = default_extrapolator(model, N)
-make_extrapolator(e::AbstractExtrapolator, model, N) = e
-make_extrapolator(::Type{NoExtrapolator}, model, N) = NoExtrapolator()
-make_extrapolator(::Type{E}, model, N) where {E <: AbstractExtrapolator} =
-    E(host_eulerian_type(model), N)
