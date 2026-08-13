@@ -66,30 +66,7 @@ end
 const allocate_array_ptr =
     @cfunction(allocate_array_j, Ptr{Cdouble}, (Cstring, Cint, Cint, Cint))
 
-# Trigger the garbage collection manually at a fixed time step interval.
-# At this point of the coupling cycle the tracking tasks are typically
-# parked, so the stop-the-world pause does not interrupt an ongoing
-# evolve.  Collections at any other moment are safe as well: the solver and
-# the communication setup preserve Julia's SIGSEGV handler, which the
-# safepoint mechanism of the multi-threaded GC relies on.
-function trigger_gc_if_due!()
-    global reg
-    reg["timestepsSinceLastGC"] += 1
-    if reg["timestepsSinceLastGC"] >= reg["gcTimeStepInterval"]
-        gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
-        reg["gc_num"] = Base.gc_num()
-        tNow = time()
-        GC.gc()
-        reg["timestepsSinceLastGC"] = 0
-        timing(tNow, "Run garbage collection")
-        println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
-    end
-    return nothing
-end
-
 function evolve_cloud(Δt, ::AsyncMode)
-    trigger_gc_if_due!()
-
     reg["timeStep"] += 1
     iStep = reg["timeStep"]
 

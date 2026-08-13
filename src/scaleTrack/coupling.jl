@@ -112,7 +112,6 @@ function init_async_tracking!(
     nCellsPerDirection, origin, ending,
     decompositions,
     nSubSteps = 10,
-    gcTimeStepInterval = 100,
     saveTimingsInterval = 0,
     extrapolator = nothing,
     initChunk! = init!,
@@ -141,14 +140,12 @@ function init_async_tracking!(
     end
     decomposition = decompositions[comm.size]
 
-    reg["gcTimeStepInterval"] = gcTimeStepInterval
-    reg["timestepsSinceLastGC"] = 0
     reg["timeStep"] = 0
     init_timings!(saveTimingsInterval)
 
     @show model
     @show nParcels nParcelsTotal nChunks nCellsPerDirection origin ending
-    @show decomposition nSubSteps gcTimeStepInterval
+    @show decomposition nSubSteps
 
     global mesh = construct_mesh(
         expand3(nCellsPerDirection), expand3(origin), expand3(ending),

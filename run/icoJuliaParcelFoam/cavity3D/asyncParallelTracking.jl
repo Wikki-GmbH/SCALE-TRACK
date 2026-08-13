@@ -49,8 +49,6 @@ init_async_tracking!(
         1 => (1, 1, 1),
         20 => (2, 2, 5)
     ),
-
-    gcTimeStepInterval = 100,
 )
 
 # Test a few time steps when running in a REPL

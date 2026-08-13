@@ -38,7 +38,6 @@ init_async_tracking!(
     # Hold the previous true source between coupling steps
     extrapolator = ConstExtrapolator,
 
-    gcTimeStepInterval = 100,
     initChunk! = init_droplets!,
 )
 

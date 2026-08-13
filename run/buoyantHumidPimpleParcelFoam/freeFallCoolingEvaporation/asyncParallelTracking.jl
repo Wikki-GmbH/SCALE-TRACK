@@ -41,7 +41,6 @@ init_async_tracking!(
         2 => (1, 1, 2)
     ),
 
-    gcTimeStepInterval = 20,
     initChunk! = init_droplets!,
 )
 

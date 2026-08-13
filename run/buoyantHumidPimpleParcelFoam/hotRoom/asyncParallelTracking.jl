@@ -50,7 +50,6 @@ init_async_tracking!(
     # point of running it
     saveTimingsInterval = 10,
 
-    gcTimeStepInterval = 100,
     extrapolator = ConstExtrapolator,
     initChunk! = init_droplets!,
 )
