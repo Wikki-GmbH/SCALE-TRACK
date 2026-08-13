@@ -125,7 +125,9 @@ else
 end
 include("asyncTracking.jl")
 include("vtkOutput.jl")
+include("api.jl")
 include("coupling.jl")
+include("standalone.jl")
 
 # The load timings are printed by the initialization drivers, which run after
 # the non-master ranks have been silenced

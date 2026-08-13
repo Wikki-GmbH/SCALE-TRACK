@@ -7,187 +7,23 @@
 =#
 
 #=
-    Case- and C++-facing API.
+    The two drivers a case script calls.
 
-    A case script includes scaleTrack.jl, constructs a physics model
-    (StokesParticle or HumidAirDroplet) and calls one of the two drivers:
+    A case includes scaleTrack.jl, constructs a physics model -- StokesParticle
+    or HumidAirDroplet -- and calls one of:
 
     - init_async_tracking!(executor, model; ...): the production coupling.
       The tracking runs asynchronously with respect to the OpenFOAM time
       loop; every MPI rank participates.
 
     - init_sync_tracking!(executor, model; ...): a synchronous, single-rank
-      variant in which evolve_cloud blocks until the tracking of the time
+      variant in which the coupling blocks until the tracking of the time
       step is complete.  Used for regression testing.
 
-    Both set up the global state referenced by the C++ solver: the exported
-    function pointers evolve_cloud_ptr and allocate_array_ptr as well as the
-    globals comm, chunks and executor used in the solver's eval strings.
-
-    Zero-copy field sharing: allocate_array_j hands the pointer of a
-    Julia-allocated coupled field to OpenFOAM, which re-points the field's
-    internal storage to it.  The coupled fields are the carrier and source
-    fields of the model's Eulerian container, looked up by name.
+    Either one sets up the global state the solver reaches through: the
+    communicator and its role, the mesh, the chunks, the executor, and the
+    mode that decides which methods the exported entry points dispatch to.
 =#
-
-# The Eulerian container whose fields are shared with OpenFOAM on this rank
-coupled_eulerian(::AsyncMode) = reg["eulerian"][comm.jlRank]
-coupled_eulerian(::SyncMode) = reg["eulerian"]
-
-coupled_field_size(::AsyncMode) = Int(prod(mesh.partitionN))
-coupled_field_size(::SyncMode) = Int(prod(mesh.N))
-
-function allocate_array_j(
-    name::Cstring, size::Cint, nComponents::Cint, typeByteSize::Cint
-)::Ptr{Cdouble}
-    GC.@preserve name nameSymbol = Symbol(unsafe_string(pointer(name)))
-    print("Allocating $nameSymbol\n")
-
-    if Int(typeByteSize) != Int(sizeof(scalar))
-        throw(
-            ErrorException(
-                string(
-                    "Size of Julia type (in Bytes): ", sizeof(scalar),
-                    " is different from the extern type: ", typeByteSize
-                )
-            )
-        )
-    end
-
-    # Called through a @cfunction pointer, whose world age predates any
-    # method added after the library include, so dispatch in the newest world
-    expectedSize = Base.invokelatest(coupled_field_size, trackingMode)
-    if Int(size) != expectedSize
-        throw(
-            ErrorException(
-                string(
-                    "Size of Julia mesh: ", expectedSize,
-                    " is different from field's ", nameSymbol, " size: ",
-                    Int(size)
-                )
-            )
-        )
-    end
-
-    # By now, assume that the requested field already has been allocated
-    field = getfield(
-        Base.invokelatest(coupled_eulerian, trackingMode), nameSymbol
-    )
-    GC.@preserve field cFieldPtr = Base.unsafe_convert(Ptr{Cdouble}, field)
-    print("Allocating $nameSymbol done\n")
-    return cFieldPtr
-end
-
-const allocate_array_ptr =
-    @cfunction(allocate_array_j, Ptr{Cdouble}, (Cstring, Cint, Cint, Cint))
-
-# Trigger the garbage collection manually at a fixed time step interval.
-# At this point of the coupling cycle the tracking tasks are typically
-# parked, so the stop-the-world pause does not interrupt an ongoing
-# evolve.  Collections at any other moment are safe as well: the solver and
-# the communication setup preserve Julia's SIGSEGV handler, which the
-# safepoint mechanism of the multi-threaded GC relies on.
-function trigger_gc_if_due!()
-    global reg
-    reg["timestepsSinceLastGC"] += 1
-    if reg["timestepsSinceLastGC"] >= reg["gcTimeStepInterval"]
-        gcDiff = Base.GC_Diff(Base.gc_num(), reg["gc_num"])
-        reg["gc_num"] = Base.gc_num()
-        tNow = time()
-        GC.gc()
-        reg["timestepsSinceLastGC"] = 0
-        timing(tNow, "Run garbage collection")
-        println("Allocated since last GC: $(gcDiff.allocd/1e6) MB")
-    end
-    return nothing
-end
-
-function evolve_cloud(Δt, ::AsyncMode)
-    trigger_gc_if_due!()
-
-    reg["timeStep"] += 1
-    iStep = reg["timeStep"]
-
-    # The solver calls in once per step and always at the same point of its
-    # loop, so one step ends where the next begins; what is not the tracking
-    # is the Eulerian solver
-    tNow = time()
-    record_timing!("step", tNow - reg["tStepStart"], iStep)
-    record_timing!("euler", tNow - reg["tEulerStart"], iStep)
-    reg["tStepStart"] = tNow
-
-    # Reported before the next evolve is unblocked, which is where the chunks
-    # are settled: they then hold the state of the previous coupling step, so
-    # the step just completed is the one indexed here.  The report trails by
-    # the one step the coupling is asynchronous by.
-    @cloudSummary begin
-        completed = iStep - 1
-        completed > 0 && cloud_summary_due(completed) &&
-            report_cloud_summary(AsyncMode())
-    end
-
-    if comm.isMaster
-        print("Evolve cloud\n")
-        for chunk in chunks
-            increment_time!(chunk, Δt, comm, executor)
-        end
-    end
-
-    evolve!(control, executor)
-
-    # Reported here rather than by the tracking task, whose writes to a
-    # redirected stdout would not complete until this thread came back.  The
-    # tracking figure is the last one it recorded, so it trails this step by
-    # whatever the coupling has in flight.
-    comm.isMaster && report_evolve()
-
-    comm.isMaster && timings_write_due(iStep) && save_timings(comm)
-    reg["tEulerStart"] = time()
-
-    return nothing
-end
-
-function evolve_cloud(Δt, ::SyncMode)
-    println("Evolve particles")
-    flush(stdout)
-
-    tNow = time()
-
-    reset_sources!(reg["eulerian"])
-
-    sync_evolve!(chunk, model, reg["eulerian"], mesh, Δt, executor)
-
-    @cloudSummary begin
-        reg["timeStep"] += 1
-        cloud_summary_due(reg["timeStep"]) && report_cloud_summary(SyncMode())
-    end
-
-    tEvolve = time() - tNow
-    if !firstPass
-        global totalTime += tEvolve
-    end
-    global firstPass = false
-    println("Lagrangian solver timings: current evolve = ",
-        round(tEvolve, sigdigits = 4), " s; total time = ",
-        round(totalTime, sigdigits = 4), " s"
-    )
-    return nothing
-end
-
-# Called by the solver each time step; dispatches to the active driver.
-# The @cfunction trampoline below captures the world age of its creation and
-# would not see methods defined after it; invokelatest dispatches in the
-# newest world, so the mode methods may be (re)defined at any point, e.g. by
-# a case script.
-function evolve_cloud(Δt)
-    Base.invokelatest(evolve_cloud, Δt, trackingMode)
-    return nothing
-end
-
-const evolve_cloud_ptr = @cfunction(evolve_cloud, Cvoid, (Cdouble,))
-
-###############################################################################
-# Initialization drivers called by the case scripts
 
 # Allow mesh extents and cell counts to be given as a single number (cube) or
 # per direction
@@ -432,36 +268,5 @@ function init_sync_tracking!(
     global firstPass = true
 
     report_startup(tNow, "Initialize synchronous tracking")
-    return nothing
-end
-
-###############################################################################
-# Standalone helpers (running without OpenFOAM, e.g. in a REPL)
-
-# Fill the carrier velocity fields with seeded random data.  Models with
-# additional carrier fields (temperature, vapour density) need those
-# initialized to physically sensible ranges by the caller.
-function randomize_velocity!()
-    e = reg["eulerian"]
-    if e isa Vector
-        for i in eachindex(e)
-            # Slaves allocate only their own partition
-            isassigned(e, i) && init_random!(e[i].U, 2SCL, -1SCL)
-        end
-    else
-        init_random!(e.U, 2SCL, -1SCL)
-    end
-    return nothing
-end
-
-# Exercise the tracking without OpenFOAM: freeze a random velocity field and
-# run a few evolve steps
-function standalone_run!(nSteps = 2, Δt = 1e-3)
-    randomize_velocity!()
-    tNow = time()
-    for _ in 1:nSteps
-        evolve_cloud(Δt)
-    end
-    timing(tNow, "Standalone run of $nSteps evolve steps")
     return nothing
 end
