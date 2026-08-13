@@ -9,7 +9,7 @@
 # VTK output of the particle state into the case's dataVTK directory and the
 # accompanying ParaView collection (particleTimeSeries.pvd)
 
-function write(chunk, ::CPU)
+function write_chunk(chunk, ::CPU)
     c = chunk
     t = round(c.time[1].t, sigdigits = 4)
     println("Writing time ", c.time[1].t, " as ", t)
@@ -47,29 +47,29 @@ function allocate_host_chunk(c::Chunk)
     return Chunk{T, Vector{Time}}(c.N, c.nSubSteps, props)
 end
 
-function write(chunk, ::GPU)
+function write_chunk(chunk, ::GPU)
     c = chunk
     if !(haskey(reg, "hostChunk"))
         reg["hostChunk"] = allocate_host_chunk(c)
     end
-    copy!(reg["hostChunk"], c)
-    write(reg["hostChunk"], CPU())
+    copy_fields!(reg["hostChunk"], c)
+    write_chunk(reg["hostChunk"], CPU())
     return nothing
 end
 
 # Write the chunk data from the tracking master.  Hold chunkTransfers so a
 # concurrent evolve does not mutate the particle state mid-write (the CPU
 # writes in place, the GPU copies device to host first).
-function write(chunks, comm::Comm{Master}, executor)
+function write_chunks(chunks, comm::Comm{Master}, executor)
     # TODO Enable writing for all chunks, not only the first one
     if comm.isMaster
         lock(control.locks.chunkTransfers) do
-            write(first(chunks), executor)
+            write_chunk(first(chunks), executor)
         end
     end
 end
 
-function write(chunk, ::Comm{<:CommMember}, executor) end
+function write_chunks(chunks, ::Comm{<:CommMember}, executor) end
 
 function write_paraview_collection(::Comm{Master})
     write_paraview_collection()

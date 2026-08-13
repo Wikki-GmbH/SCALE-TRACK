@@ -258,7 +258,7 @@ function init_sync_tracking!(
     tNow = timing(tNow, "Initialized particle chunk")
 
     # Write initial state
-    write(chunk, executor)
+    write_chunk(chunk, executor)
     tNow = timing(tNow, "Written VTK data")
 
     reg["eulerian"] = host_eulerian_type(model)(Int(prod(mesh.N)))

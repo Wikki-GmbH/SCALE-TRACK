@@ -22,13 +22,13 @@ struct CUDAGPU <: GPU end
 struct ROCmGPU <: GPU end
 
 # Helper to copy all struct data from host to device
-function copy!(a, b)
+function copy_fields!(a, b)
     for n in fieldnames(typeof(a))
         if !(typeof(getfield(b, n)) <: Number)
             if (typeof(getfield(b, n)) <: AbstractArray)
                 copyto!(getfield(a, n), getfield(b, n))
             else
-                copy!(getfield(a, n), getfield(b, n))
+                copy_fields!(getfield(a, n), getfield(b, n))
             end
         end
     end

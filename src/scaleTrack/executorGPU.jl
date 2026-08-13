@@ -136,7 +136,7 @@ function reset_bounding_box!(chunk, ::GPU)
     hostChunkBb = BoundingBox{Vector{scalar}}(
         fill(Inf, 3), fill(-Inf, 3)
     )
-    copy!(chunk.boundingBox, hostChunkBb)
+    copy_fields!(chunk.boundingBox, hostChunkBb)
     return hostChunkBb
 end
 
@@ -223,7 +223,7 @@ function init_bounding_boxes!(
                     state.bbKernel, (chunk, executor),
                     state.threads, state.blocks, executor
                 )
-                copy!(hostChunkBb, chunk.boundingBox)
+                copy_fields!(hostChunkBb, chunk.boundingBox)
                 determine!(
                     comm.member.requiredEulerianRanks,
                     hostChunkBb,
@@ -250,7 +250,7 @@ function evolve_all_chunks!(
                     state.threads, state.blocks, executor
                 )
 
-                copy!(hostChunkBb, chunk.boundingBox)
+                copy_fields!(hostChunkBb, chunk.boundingBox)
                 determine!(
                     comm.member.requiredEulerianRanks,
                     hostChunkBb,
@@ -288,7 +288,7 @@ function sync_evolve!(chunk, model, eulerian, mesh, Δt, executor::GPU)
     end
     deviceEulerian = reg["syncDeviceEulerian"]
     devicePointers = reg["syncDeviceEulerianPointer"]
-    copy!(deviceEulerian, eulerian)
+    copy_fields!(deviceEulerian, eulerian)
 
     increment_time!(chunk, Δt, executor)
 
@@ -307,6 +307,6 @@ function sync_evolve!(chunk, model, eulerian, mesh, Δt, executor::GPU)
     )
     synchronize_device(executor)
 
-    copy!(eulerian, deviceEulerian)
+    copy_fields!(eulerian, deviceEulerian)
     return nothing
 end

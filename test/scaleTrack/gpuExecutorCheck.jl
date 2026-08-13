@@ -96,7 +96,7 @@ function init_from_host!(chunk, mesh, executor, randSeed = 19891)
         haskey(h.props, :T) && fill!(h.props.T, TD0*SCL)
         hostRef = h
     end
-    copy!(chunk, hostRef)
+    copy_fields!(chunk, hostRef)
     return nothing
 end
 
