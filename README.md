@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="media/Logo-large.png" alt="SCALE-TRACK" width="560">
+</p>
+
 # SCALE-TRACK
 
 Asynchronous two-way coupled Euler-Lagrange particle tracking on heterogeneous

@@ -5,3 +5,7 @@ src/intermediateST_250321/** linguist-vendored
 # OpenFOAM dictionaries and field files are text and must stay LF, whatever
 # the checkout platform does.
 * text=auto eol=lf
+
+# Images are binary.  Auto-detection already spares them the rule above, but
+# say so: a logo mangled by line-ending translation fails silently.
+*.png binary
