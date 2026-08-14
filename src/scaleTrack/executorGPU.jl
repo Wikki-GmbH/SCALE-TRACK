@@ -198,6 +198,18 @@ function master_state(chunks, model, eulerian, mesh, comm, executor::GPU)
         compute_bounding_box, (aChunk, executor), executor
     )
 
+    # A kernel that spills is the difference between the tracking hiding
+    # inside the Eulerian phase and doubling the coupling step, and the
+    # spilling is invisible in every timing until it is looked for
+    # Printed rather than kept behind the communication debugging, since only
+    # the master ranks reach it and only one rank's stdout reaches the log
+    resources = kernel_resources(kernel, executor)
+    println(
+        "Evolve kernel: ", resources.registers, " registers, ",
+        resources.scratch, " B scratch per thread, launched ",
+        threads, " threads per block of at most ", resources.maxThreads
+    )
+
     state = GPUMasterState(
         compute, devicePointers, kernel, bbKernel, threads, blocks
     )

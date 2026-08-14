@@ -106,3 +106,12 @@ end
 
 launch_kernel!(kernel, args, threads, blocks, ::CUDAGPU) =
     kernel(args...; threads, blocks)
+
+# What the kernel got: registers held, and the local memory it spills into if
+# they were not enough.  The counterpart of the ROCm one, so a startup report
+# reads the same on either vendor.
+kernel_resources(kernel, ::CUDAGPU) = (
+    registers = Int(CUDA.registers(kernel)),
+    scratch = Int(CUDA.memory(kernel).local),
+    maxThreads = Int(CUDA.maxthreads(kernel)),
+)

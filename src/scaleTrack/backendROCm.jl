@@ -96,11 +96,113 @@ end
     return nothing
 end
 
+###############################################################################
+# Launch bounds
+#
+# A wave's register budget is the register file of its SIMD divided by the
+# waves the workgroup forces onto that SIMD.  On CDNA2 and CDNA3 the file
+# holds 512 registers a lane, so a kernel compiled for the default maximum of
+# 1024 workitems -- sixteen wave64 over four SIMDs -- may use 128 of them and
+# spills whatever else it needs.  The evolve kernel of the droplet model needs
+# 230: compiled for 1024 it spills 178 vector and 140 scalar registers into
+# 1216 B of scratch a thread, and the tracking runs 2.25x slower for it.
+#
+# What the compiler needs is the maximum workgroup size, as an attribute on
+# the kernel.  HIP writes it with __launch_bounds__; AMDGPU.jl exposes no
+# equivalent, so the library sets it through the one GPUCompiler hook AMDGPU
+# leaves free.  Both halves have to agree: a kernel compiled for a smaller
+# workgroup cannot be launched at a larger one, which is what kernel_config
+# below is for.
+#
+# The default is deliberately narrow.  It applies to the architectures the
+# effect was measured on and to the tracking kernel alone, since a kernel that
+# fits its registers gains nothing and loses the larger workgroup.  Set
+# ST_FLAT_WORK_GROUP_SIZE to another size to try one, or to 0 to leave the
+# compiler's default in place.
+const flatWorkGroupArchs = ("gfx90a", "gfx940", "gfx941", "gfx942")
+
+const flatWorkGroupKernels = ("evolve_on_device",)
+
+function default_flat_work_group_size()
+    haskey(ENV, "ST_FLAT_WORK_GROUP_SIZE") &&
+        return parse(Int, ENV["ST_FLAT_WORK_GROUP_SIZE"])
+    arch = try
+        AMDGPU.HIP.gcn_arch(AMDGPU.device())
+    catch
+        return 0
+    end
+    return any(a -> startswith(arch, a), flatWorkGroupArchs) ? 256 : 0
+end
+
+const flatWorkGroupSize = default_flat_work_group_size()
+
+if flatWorkGroupSize > 0
+    if pkgversion(AMDGPU) ≥ v"3"
+        @warn string(
+            "Launch bounds are set through a GPUCompiler hook that AMDGPU 2.x ",
+            "leaves free; check that AMDGPU ", pkgversion(AMDGPU),
+            " still does before relying on the tracking kernel's registers."
+        )
+    end
+
+    # More specific than GPUCompiler's own method for the GCN target, which it
+    # therefore has to call itself.  AMDGPU defines finish_module! and leaves
+    # this one alone; were that to change, the two methods would be equally
+    # specific and Julia would report the ambiguity rather than pick silently.
+    function AMDGPU.GPUCompiler.finish_ir!(
+        @nospecialize(job::AMDGPU.Compiler.HIPCompilerJob),
+        mod::AMDGPU.LLVM.Module, entry::AMDGPU.LLVM.Function
+    )
+        entry = invoke(
+            AMDGPU.GPUCompiler.finish_ir!,
+            Tuple{
+                AMDGPU.GPUCompiler.CompilerJob{
+                    AMDGPU.GPUCompiler.GCNCompilerTarget
+                },
+                typeof(mod), typeof(entry)
+            },
+            job, mod, entry
+        )
+
+        name = AMDGPU.LLVM.name(entry)
+        if job.config.kernel &&
+            any(k -> occursin(k, name), flatWorkGroupKernels)
+            push!(
+                AMDGPU.LLVM.function_attributes(entry),
+                AMDGPU.LLVM.StringAttribute(
+                    "amdgpu-flat-work-group-size", "1,$(flatWorkGroupSize)"
+                )
+            )
+        end
+        return entry
+    end
+end
+
 compile_kernel(f, args, ::ROCmGPU) = AMDGPU.@roc launch=false f(args...)
 
 function kernel_config(kernel, ::ROCmGPU)
     config = AMDGPU.launch_configuration(kernel)
-    return (threads = config.groupsize, blocks = config.gridsize)
+    threads = flatWorkGroupSize > 0 ?
+        min(config.groupsize, flatWorkGroupSize) : config.groupsize
+    return (threads = threads, blocks = config.gridsize)
+end
+
+# What the kernel actually got: registers held, and the scratch it spills into
+# if they were not enough.  Reported at startup because a spilling kernel is
+# the difference between the tracking hiding inside the Eulerian phase and
+# doubling the coupling step.
+function kernel_resources(kernel, ::ROCmGPU)
+    attribute(a) = begin
+        value = Ref{Cint}()
+        AMDGPU.HIP.hipFuncGetAttribute(value, a, kernel.fun)
+        Int(value[])
+    end
+    return (
+        registers = attribute(AMDGPU.HIP.HIP_FUNC_ATTRIBUTE_NUM_REGS),
+        scratch = attribute(AMDGPU.HIP.HIP_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES),
+        maxThreads =
+            attribute(AMDGPU.HIP.HIP_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK),
+    )
 end
 
 launch_kernel!(kernel, args, threads, blocks, ::ROCmGPU) =
