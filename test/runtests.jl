@@ -125,7 +125,13 @@ mktempdir() do tmp
             golden = joinpath(ROOT, case, "checks_humid.txt")
             written = joinpath(tmp, "checks_humid.txt")
 
-            @test run_check(joinpath(case, "testHumidTracking.jl"), written)
+            # Every task accumulates the sources into its own copy before the
+            # copies are combined, so the task count decides the order the
+            # contributions are summed in and the last digits with it.  The
+            # comparison below is bitwise, so the count has to be fixed rather
+            # than taken from whatever the environment offers.
+            @test run_check(joinpath(case, "testHumidTracking.jl"), written;
+                threads = 1)
             if isfile(written)
                 @test read_checks(written) == read_checks(golden)
             end
