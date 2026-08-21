@@ -222,7 +222,7 @@ int main(int argc, char *argv[])
         {
             julia.checkedEvalString
             (
-                "if comm.isMaster write(chunks, comm, executor) end"
+                "if comm.isMaster write_chunks(chunks, comm, executor) end"
             );
             ++writeTimes;
         }
